@@ -24,27 +24,27 @@
 #define WM_VPN_RESULT  (WM_USER + 100)  /* op done: wParam=ok, lParam=heap str */
 #define WM_VPN_LOG     (WM_USER + 101)  /* intermediate log from thread */
 
-/* ─── Window / Layout (~30% bigger than original) ──── */
-#define WIN_W        625
-#define WIN_H        820
-#define MG           22
-#define CW           (WIN_W - 2 * MG)   /* content width = 581 */
+/* ─── Window / Layout (~80% bigger than original 480x650) ── */
+#define WIN_W        864
+#define WIN_H        920
+#define MG           26
+#define CW           (WIN_W - 2 * MG)   /* content width = 812 */
 
 #define Y_HDR        0
 #define H_HDR        84
 #define Y_CARD       92
 #define H_CARD       124
 #define Y_BTNS       228
-#define H_BTN        48
-#define Y_INFO       288
+#define H_BTN        50
+#define Y_INFO       290
 #define H_INFO       84
-#define Y_IPCONF     384     /* IP config section */
-#define H_IPCONF     88
-#define Y_STGBTN     482
-#define H_STGBTN     32
-#define Y_CONTENT    524
-#define H_CONTENT    252
-#define Y_FOOTER     790
+#define Y_IPCONF     386     /* IP config section */
+#define H_IPCONF     90
+#define Y_STGBTN     488
+#define H_STGBTN     34
+#define Y_CONTENT    532
+#define H_CONTENT    348     /* extra height goes to log area */
+#define Y_FOOTER     892
 
 /* ─── Control IDs ───────────────────────────────────── */
 enum {

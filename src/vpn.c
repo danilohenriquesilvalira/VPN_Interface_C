@@ -363,50 +363,32 @@ void vpn_get_status(const VpnConfig *cfg, VpnStatus *s) {
     }
 }
 
-/* ─── Find VPN virtual adapter name ─────────────── */
-/* Returns the Windows interface alias of the SoftEther virtual NIC */
+/* ─── Find VPN virtual adapter name via PowerShell ── */
+/* Uses the same strategy as get_vpn_ip() - reliable across all Windows versions */
 static int find_vpn_adapter(char *name_out, int name_len) {
-    /* Try the known standard names first (no PowerShell needed) */
-    static const char *candidates[] = {
-        "VPN Client Adapter - " NIC_NAME,
-        "VPN Client Adapter - VPN",
-        NIC_NAME,
-        NULL
-    };
-    for (int i = 0; candidates[i]; i++) {
-        /* Use netsh to verify the interface exists */
-        char cmd[512];
-        char out[2048] = {0};
-        snprintf(cmd, sizeof(cmd),
-            "netsh interface ipv4 show addresses name=\"%s\"",
-            candidates[i]);
-        exec_capture(cmd, out, sizeof(out));
-        if (!strstr(out, "not found") && !strstr(out, "not exist") &&
-            !strstr(out, "failed")   && out[0] != 0) {
-            strncpy(name_out, candidates[i], name_len - 1);
-            return 1;
-        }
-    }
-
-    /* Fallback: use PowerShell to find any SoftEther/TAP adapter */
-    char ps[1024];
+    char ps[2048];
+    /* Query by description (SoftEther/TAP) OR by alias matching NIC_NAME */
     snprintf(ps, sizeof(ps),
         "powershell.exe -NonInteractive -WindowStyle Hidden -Command \""
-        "Get-NetAdapter | Where-Object { "
+        "$a = Get-NetAdapter | Where-Object { "
         "  $_.InterfaceDescription -like '*SoftEther*' -or "
-        "  $_.InterfaceDescription -like '*TAP-Windows*' } | "
-        "Select-Object -First 1 -ExpandProperty InterfaceAlias\"");
-    char out[512] = {0};
-    exec_capture(ps, out, sizeof(out));
+        "  $_.InterfaceDescription -like '*TAP-Windows*' -or "
+        "  $_.InterfaceAlias       -like '*" NIC_NAME "*' -or "
+        "  $_.InterfaceAlias       -like '*VPN Client*' "
+        "} | Select-Object -First 1; "
+        "if ($a) { Write-Output $a.InterfaceAlias } "
+        "else    { Write-Output 'NOTFOUND' }\"");
 
-    /* Trim */
-    char *p = out;
+    char buf[512] = {0};
+    exec_capture(ps, buf, sizeof(buf));
+
+    /* Trim whitespace / CRLF */
+    char *p = buf;
     while (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t') p++;
-    char *end = p + strlen(p);
-    while (end > p && (end[-1]==' '||end[-1]=='\r'||end[-1]=='\n'||end[-1]=='\t'))
-        *--end = 0;
+    char *e = p + strlen(p);
+    while (e > p && (e[-1]==' '||e[-1]=='\r'||e[-1]=='\n'||e[-1]=='\t')) *--e = 0;
 
-    if (*p) {
+    if (*p && strcmp(p, "NOTFOUND") != 0) {
         strncpy(name_out, p, name_len - 1);
         return 1;
     }
@@ -416,38 +398,45 @@ static int find_vpn_adapter(char *name_out, int name_len) {
 /* ─── Apply static IP to VPN virtual adapter ─────── */
 int vpn_set_static_ip(const char *ip, const char *mask, char *out, int n) {
     if (!ip || !ip[0]) {
-        snprintf(out, n, "IP nao definido.");
+        snprintf(out, n, "Erro: campo IP vazio.");
         return 0;
     }
 
-    /* Default mask */
     const char *m = (mask && mask[0]) ? mask : "255.255.255.0";
 
+    /* Step 1: find adapter */
     char adapter[256] = {0};
     if (!find_vpn_adapter(adapter, sizeof(adapter))) {
         snprintf(out, n,
-            "Placa VPN nao encontrada. Verifique o nome da interface em:\n"
-            "Painel de Controlo > Centro de Rede > Alterar adaptadores");
+            "Placa VPN nao encontrada. Verifique 'Alterar adaptadores de rede' "
+            "no Windows e confirme que a VPN esta ligada.");
         return 0;
     }
 
+    /* Step 2: apply via netsh
+       Correct syntax: netsh interface ip set address "name" static IP MASK
+       netsh returns EMPTY stdout on success, error text on failure. */
     char cmd[1024];
     char result[2048] = {0};
     snprintf(cmd, sizeof(cmd),
-        "netsh interface ipv4 set address name=\"%s\" "
-        "source=static address=%s mask=%s",
+        "netsh interface ip set address name=\"%s\" static %s %s",
         adapter, ip, m);
     exec_capture(cmd, result, sizeof(result));
 
-    /* netsh returns empty on success */
-    if (result[0] == 0 ||
-        strstr(result, "Ok") ||
-        !strstr(result, "Error")) {
-        snprintf(out, n, "IP %s / %s aplicado em \"%s\".", ip, m, adapter);
+    /* Trim result */
+    char *r = result;
+    while (*r == ' ' || *r == '\r' || *r == '\n' || *r == '\t') r++;
+    char *re = r + strlen(r);
+    while (re > r && (re[-1]==' '||re[-1]=='\r'||re[-1]=='\n'||re[-1]=='\t')) *--re=0;
+
+    /* SUCCESS = empty output (netsh convention) */
+    if (*r == '\0') {
+        snprintf(out, n, "IP %s / %s aplicado na placa \"%s\".", ip, m, adapter);
         return 1;
     }
 
-    snprintf(out, n, "Falha ao aplicar IP: %.200s", result);
+    /* FAILURE = any non-empty output */
+    snprintf(out, n, "Falha ao aplicar IP na \"%s\": %s", adapter, r);
     return 0;
 }
 
