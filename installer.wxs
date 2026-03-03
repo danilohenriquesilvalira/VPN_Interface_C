@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+
+  <Product Id="*"
+           Name="RLS Automacao VPN"
+           Language="1033"
+           Version="1.0.1.0"
+           Manufacturer="RLS Automacao"
+           UpgradeCode="{7A4E9C2F-3B1D-4E6A-8C5F-9D2B1A3E7F4C}">
+
+    <Package InstallerVersion="301"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Platform="x64"
+             Description="RLS Automacao VPN Client"
+             Comments="Instala o cliente VPN da RLS Automacao com SoftEther incluido" />
+
+    <!-- Upgrade handling: replace older versions automatically -->
+    <MajorUpgrade DowngradeErrorMessage="Uma versao mais recente ja esta instalada." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- App icon for Add/Remove Programs -->
+    <Icon Id="AppIcon.ico" SourceFile="src\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <Property Id="ARPHELPLINK"    Value="https://github.com/danilohenriquesilvalira/VPN_Interface_C" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/danilohenriquesilvalira/VPN_Interface_C" />
+
+    <Feature Id="ProductFeature" Title="RLS Automacao VPN" Level="1">
+      <ComponentGroupRef Id="AppComponents" />
+    </Feature>
+
+    <!--
+      Custom action: run SoftEther installer silently right after files are placed.
+      FileKey="SEInstallerFile" resolves to the installed path of se_client.exe.
+      Execute="deferred" + Impersonate="no" = runs as SYSTEM (needed for driver install).
+      Return="ignore" = don't fail MSI even if SoftEther installer returns non-zero.
+    -->
+    <CustomAction Id="InstallSoftEther"
+                  FileKey="SEInstallerFile"
+                  ExeCommand="/SILENT /NORESTART"
+                  Execute="deferred"
+                  Return="ignore"
+                  Impersonate="no" />
+
+    <InstallExecuteSequence>
+      <!-- Only on first install, not on uninstall or repair -->
+      <Custom Action="InstallSoftEther" After="InstallFiles">NOT Installed AND NOT REMOVE</Custom>
+    </InstallExecuteSequence>
+
+  </Product>
+
+  <!-- Directory structure -->
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="RLS Automacao VPN" />
+      </Directory>
+      <Directory Id="DesktopFolder"   Name="Desktop" />
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="AppMenuFolder" Name="RLS Automacao VPN" />
+      </Directory>
+    </Directory>
+  </Fragment>
+
+  <!-- Components -->
+  <Fragment>
+    <ComponentGroup Id="AppComponents" Directory="INSTALLFOLDER">
+
+      <!-- Main application exe -->
+      <Component Id="MainExeComp" Guid="{3B1E5C7A-8D4F-2A6E-9C3B-5F7D1A2E8C4B}">
+        <File Id="MainExeFile" Source="rls_vpn.exe" KeyPath="yes" />
+      </Component>
+
+      <!-- SoftEther installer (bundled) -->
+      <Component Id="SEInstallerComp" Guid="{8C5F2A1E-4D7B-6E3C-A9F2-7B4D1C8E5A3F}">
+        <File Id="SEInstallerFile" Source="se_client.exe" KeyPath="yes" />
+      </Component>
+
+      <!-- Desktop shortcut -->
+      <Component Id="DesktopShortcutComp" Guid="{2D8A4F7C-1E5B-3A9D-F6C2-4B8E1D7A5F9C}">
+        <Shortcut Id="DesktopShortcut"
+                  Directory="DesktopFolder"
+                  Name="RLS Automacao VPN"
+                  Description="Cliente VPN da RLS Automacao"
+                  Target="[INSTALLFOLDER]rls_vpn.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon.ico" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\RLS Automacao\VPN"
+                       Name="DesktopShortcut"
+                       Type="integer" Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+      <!-- Start Menu shortcut -->
+      <Component Id="StartMenuShortcutComp" Guid="{6E3B9A5D-7F2C-4D8B-E1A4-9C5F2B7D3E8A}">
+        <Shortcut Id="StartMenuShortcut"
+                  Directory="AppMenuFolder"
+                  Name="RLS Automacao VPN"
+                  Description="Cliente VPN da RLS Automacao"
+                  Target="[INSTALLFOLDER]rls_vpn.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon.ico" />
+        <RemoveFolder Id="RemoveAppMenuFolder" Directory="AppMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\RLS Automacao\VPN"
+                       Name="StartMenuShortcut"
+                       Type="integer" Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+    </ComponentGroup>
+  </Fragment>
+
+</Wix>

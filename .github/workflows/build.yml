@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-windows:
-    name: Build Windows EXE
+    name: Build Windows EXE + MSI
     runs-on: windows-latest
     permissions:
       contents: write
@@ -28,35 +28,55 @@ jobs:
       - name: Download SoftEther VPN Client
         shell: pwsh
         run: |
-          # Fetch latest stable release from SoftEtherVPN_Stable
-          $api = Invoke-RestMethod `
-            -Uri 'https://api.github.com/repos/SoftEtherVPN/SoftEtherVPN_Stable/releases/latest' `
-            -Headers @{ 'User-Agent' = 'rls-vpn-build' }
-          Write-Host "Latest SoftEther release: $($api.tag_name)"
-
-          # Find the Windows VPN Client installer asset
-          $asset = $api.assets | Where-Object {
-            $_.name -match 'vpnclient' -and $_.name -match 'windows'
-          } | Select-Object -First 1
-
-          if (-not $asset) {
-            Write-Error "No Windows VPN Client asset found in SoftEther latest release."
+          # Try GitHub API first (SoftEtherVPN_Stable)
+          try {
+            $api = Invoke-RestMethod `
+              -Uri 'https://api.github.com/repos/SoftEtherVPN/SoftEtherVPN_Stable/releases/latest' `
+              -Headers @{ 'User-Agent' = 'rls-vpn-build' }
+            Write-Host "Latest SoftEther release: $($api.tag_name)"
             Write-Host "Available assets:"
             $api.assets | ForEach-Object { Write-Host "  $($_.name)" }
-            exit 1
+
+            # Match Windows VPN Client installer (various naming conventions)
+            $asset = $api.assets | Where-Object {
+              ($_.name -match 'vpnclient' -or $_.name -match 'VPN.Client') -and
+              ($_.name -match 'windows'   -or $_.name -match 'Windows')    -and
+              ($_.name -match '\.exe$'    -or $_.name -match '\.msi$')
+            } | Select-Object -First 1
+
+            if ($asset) {
+              Write-Host "Downloading: $($asset.name)"
+              Invoke-WebRequest -Uri $asset.browser_download_url -OutFile se_client.exe -UseBasicParsing
+              $sz = (Get-Item se_client.exe).Length
+              Write-Host "Downloaded: $([math]::Round($sz/1MB,1)) MB"
+              if ($sz -gt 1MB) { exit 0 }
+            }
+          } catch {
+            Write-Host "GitHub API failed: $_"
           }
 
-          Write-Host "Downloading: $($asset.name) ($([math]::Round($asset.size/1MB,1)) MB)"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile se_client.exe -UseBasicParsing
-
-          $size = (Get-Item se_client.exe).Length
-          Write-Host "Download complete: $size bytes"
-          if ($size -lt 1MB) {
-            Write-Error "Downloaded file is too small - download may have failed"
-            exit 1
+          # Fallback: SoftEther official download (v4.43 stable)
+          Write-Host "Trying fallback URL..."
+          $urls = @(
+            'https://github.com/SoftEtherVPN/SoftEtherVPN_Stable/releases/download/v4.43-9799/softether-vpnclient-v4.43-9799-rtm-2023.08.31-windows-x86_64.exe',
+            'https://github.com/SoftEtherVPN/SoftEtherVPN_Stable/releases/download/v4.42-9798/softether-vpnclient-v4.42-9798-rtm-2023.06.30-windows-x86_64.exe'
+          )
+          foreach ($url in $urls) {
+            try {
+              Write-Host "Trying: $url"
+              Invoke-WebRequest -Uri $url -OutFile se_client.exe -UseBasicParsing -TimeoutSec 120
+              $sz = (Get-Item se_client.exe).Length
+              if ($sz -gt 1MB) {
+                Write-Host "Success: $([math]::Round($sz/1MB,1)) MB"
+                exit 0
+              }
+            } catch { Write-Host "Failed: $_" }
           }
 
-      - name: Build
+          Write-Error "Could not download SoftEther VPN Client installer."
+          exit 1
+
+      - name: Build EXE
         shell: msys2 {0}
         run: |
           windres src/resource.rc -O coff -o src/resource.o
@@ -65,11 +85,34 @@ jobs:
             -lcomctl32 -lgdi32 -lshcore
           ls -lh rls_vpn.exe
 
-      - name: Upload artifact
+      - name: Build MSI (WiX)
+        shell: pwsh
+        run: |
+          # Locate WiX Toolset bin directory
+          $wixDir = Get-ChildItem "C:\Program Files (x86)" -Filter "WiX Toolset*" -Directory |
+                    Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $wixDir) { throw "WiX Toolset not found in Program Files (x86)" }
+          $wix = Join-Path $wixDir.FullName "bin"
+          Write-Host "WiX: $wix"
+
+          # Compile
+          & "$wix\candle.exe" -arch x64 installer.wxs -o installer.wixobj
+          if ($LASTEXITCODE -ne 0) { throw "candle.exe failed with exit $LASTEXITCODE" }
+
+          # Link
+          & "$wix\light.exe" installer.wixobj -o rls_vpn.msi
+          if ($LASTEXITCODE -ne 0) { throw "light.exe failed with exit $LASTEXITCODE" }
+
+          $sz = [math]::Round((Get-Item rls_vpn.msi).Length / 1MB, 1)
+          Write-Host "MSI built successfully: $sz MB"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rls_vpn_windows_x64
-          path: rls_vpn.exe
+          path: |
+            rls_vpn.exe
+            rls_vpn.msi
           if-no-files-found: error
 
       - name: Create Release
@@ -80,15 +123,20 @@ jobs:
           body: |
             ## RLS Automacao VPN ${{ github.ref_name }}
 
-            ### Como usar
-            1. Baixe `rls_vpn.exe`
-            2. Execute como **Administrador**
-            3. Na primeira execucao o SoftEther VPN Client e instalado automaticamente
+            ### Como instalar
+            1. Baixe **`rls_vpn.msi`** (recomendado)
+            2. Execute o MSI como **Administrador**
+            3. O SoftEther VPN Client e instalado automaticamente
+            4. Abre o atalho **RLS Automacao VPN** no Ambiente de Trabalho
+
+            > **Alternativa:** Se ja tiver o SoftEther instalado, podes usar apenas `rls_vpn.exe`
 
             ### Requisitos
             - Windows 10 / 11 (64-bit)
             - Permissoes de Administrador
-          files: rls_vpn.exe
+          files: |
+            rls_vpn.exe
+            rls_vpn.msi
           draft: false
           prerelease: false
         env:

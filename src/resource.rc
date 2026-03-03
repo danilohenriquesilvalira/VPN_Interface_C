@@ -6,11 +6,6 @@
 /* UAC + DPI manifest */
 1 RT_MANIFEST "app.manifest"
 
-/* Embedded SoftEther VPN Client installer
-   File must exist at project root during build.
-   In CI: downloaded automatically. Locally: copy se_client.exe to project root. */
-100 RCDATA "../se_client.exe"
-
 /* Version info */
 VS_VERSION_INFO VERSIONINFO
   FILEVERSION     1,0,0,0
