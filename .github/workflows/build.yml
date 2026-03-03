@@ -46,15 +46,29 @@ jobs:
           path: rls_vpn.exe
           if-no-files-found: error
 
-      - name: Install NSIS and build installer
+      - name: Build NSIS installer
         if: startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        id: nsis
         shell: pwsh
         run: |
           choco install nsis --yes --no-progress
-          $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
-          if (-not (Test-Path $makensis)) { $makensis = "C:\Program Files\NSIS\makensis.exe" }
-          & $makensis installer.nsi
-          Write-Host "Installer size: $((Get-Item RLS_VPN_Setup.exe).Length) bytes"
+          # Find makensis.exe
+          $paths = @(
+            "C:\Program Files (x86)\NSIS\makensis.exe",
+            "C:\Program Files\NSIS\makensis.exe"
+          )
+          $makensis = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $makensis) {
+            Write-Warning "makensis.exe not found - skipping installer"
+            exit 0
+          }
+          Write-Host "Using makensis: $makensis"
+          & $makensis /V3 installer.nsi
+          if (Test-Path "RLS_VPN_Setup.exe") {
+            Write-Host "Installer built: $((Get-Item RLS_VPN_Setup.exe).Length) bytes"
+            echo "INSTALLER_BUILT=true" >> $env:GITHUB_OUTPUT
+          }
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -62,23 +76,22 @@ jobs:
         with:
           name: "RLS Automacao VPN ${{ github.ref_name }}"
           body: |
-            ## RLS Automacao VPN - ${{ github.ref_name }}
+            ## RLS Automacao VPN ${{ github.ref_name }}
 
-            ### Instalacao
-            1. Baixe `RLS_VPN_Setup.exe` e execute como Administrador
-            2. O instalador configura tudo automaticamente
-            3. Na primeira execucao o SoftEther VPN Client sera instalado
+            ### Como instalar
+            1. Baixe `rls_vpn.exe` abaixo
+            2. Execute como **Administrador**
+            3. Na primeira execucao, o SoftEther VPN Client sera instalado automaticamente
 
             ### Requisitos
             - Windows 10 ou 11 (64-bit)
             - Permissoes de Administrador
 
             ### Arquivos
-            - `RLS_VPN_Setup.exe` - Instalador completo (recomendado)
-            - `rls_vpn.exe` - Executavel standalone (requer SoftEther ja instalado)
+            - `rls_vpn.exe` — Executavel principal (basta executar como admin)
           files: |
             rls_vpn.exe
-            RLS_VPN_Setup.exe
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
         env:
