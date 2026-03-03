@@ -48,10 +48,13 @@ jobs:
 
       - name: Install NSIS and build installer
         if: startsWith(github.ref, 'refs/tags/')
-        shell: cmd
+        shell: pwsh
         run: |
           choco install nsis --yes --no-progress
-          makensis installer.nsi
+          $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) { $makensis = "C:\Program Files\NSIS\makensis.exe" }
+          & $makensis installer.nsi
+          Write-Host "Installer size: $((Get-Item RLS_VPN_Setup.exe).Length) bytes"
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
