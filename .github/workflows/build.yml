@@ -82,7 +82,7 @@ jobs:
           windres src/resource.rc -O coff -o src/resource.o
           gcc -Wall -O2 -Isrc -mwindows -o rls_vpn.exe \
             src/main.c src/vpn.c src/resource.o \
-            -lcomctl32 -lgdi32 -lshcore
+            -lcomctl32 -lgdi32 -lshcore -lole32 -lgdiplus
           ls -lh rls_vpn.exe
 
       - name: Build MSI (WiX)

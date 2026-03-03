@@ -53,4 +53,9 @@ int  vpn_disconnect(const VpnConfig *cfg, char *out, int n);
 void vpn_get_status(const VpnConfig *cfg, VpnStatus *s);
 int  vpn_reset(const VpnConfig *cfg, char *out, int n);
 
+/* Apply a static IP to the VPN virtual adapter via netsh.
+   Searches for the VPN adapter automatically.
+   Returns 1 on success, 0 on error (with message in out). */
+int  vpn_set_static_ip(const char *ip, const char *mask, char *out, int n);
+
 #endif /* VPN_H */

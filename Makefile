@@ -12,7 +12,7 @@ SRCS    = src/main.c src/vpn.c
 OBJS    = src/main.o src/vpn.o src/resource.o
 
 CFLAGS  = -Wall -Wextra -O2 -Isrc -mwindows
-LDFLAGS = -lcomctl32 -lgdi32 -lshcore
+LDFLAGS = -lcomctl32 -lgdi32 -lshcore -lole32 -lgdiplus
 
 .PHONY: all clean install
 

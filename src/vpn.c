@@ -363,6 +363,94 @@ void vpn_get_status(const VpnConfig *cfg, VpnStatus *s) {
     }
 }
 
+/* ─── Find VPN virtual adapter name ─────────────── */
+/* Returns the Windows interface alias of the SoftEther virtual NIC */
+static int find_vpn_adapter(char *name_out, int name_len) {
+    /* Try the known standard names first (no PowerShell needed) */
+    static const char *candidates[] = {
+        "VPN Client Adapter - " NIC_NAME,
+        "VPN Client Adapter - VPN",
+        NIC_NAME,
+        NULL
+    };
+    for (int i = 0; candidates[i]; i++) {
+        /* Use netsh to verify the interface exists */
+        char cmd[512];
+        char out[2048] = {0};
+        snprintf(cmd, sizeof(cmd),
+            "netsh interface ipv4 show addresses name=\"%s\"",
+            candidates[i]);
+        exec_capture(cmd, out, sizeof(out));
+        if (!strstr(out, "not found") && !strstr(out, "not exist") &&
+            !strstr(out, "failed")   && out[0] != 0) {
+            strncpy(name_out, candidates[i], name_len - 1);
+            return 1;
+        }
+    }
+
+    /* Fallback: use PowerShell to find any SoftEther/TAP adapter */
+    char ps[1024];
+    snprintf(ps, sizeof(ps),
+        "powershell.exe -NonInteractive -WindowStyle Hidden -Command \""
+        "Get-NetAdapter | Where-Object { "
+        "  $_.InterfaceDescription -like '*SoftEther*' -or "
+        "  $_.InterfaceDescription -like '*TAP-Windows*' } | "
+        "Select-Object -First 1 -ExpandProperty InterfaceAlias\"");
+    char out[512] = {0};
+    exec_capture(ps, out, sizeof(out));
+
+    /* Trim */
+    char *p = out;
+    while (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t') p++;
+    char *end = p + strlen(p);
+    while (end > p && (end[-1]==' '||end[-1]=='\r'||end[-1]=='\n'||end[-1]=='\t'))
+        *--end = 0;
+
+    if (*p) {
+        strncpy(name_out, p, name_len - 1);
+        return 1;
+    }
+    return 0;
+}
+
+/* ─── Apply static IP to VPN virtual adapter ─────── */
+int vpn_set_static_ip(const char *ip, const char *mask, char *out, int n) {
+    if (!ip || !ip[0]) {
+        snprintf(out, n, "IP nao definido.");
+        return 0;
+    }
+
+    /* Default mask */
+    const char *m = (mask && mask[0]) ? mask : "255.255.255.0";
+
+    char adapter[256] = {0};
+    if (!find_vpn_adapter(adapter, sizeof(adapter))) {
+        snprintf(out, n,
+            "Placa VPN nao encontrada. Verifique o nome da interface em:\n"
+            "Painel de Controlo > Centro de Rede > Alterar adaptadores");
+        return 0;
+    }
+
+    char cmd[1024];
+    char result[2048] = {0};
+    snprintf(cmd, sizeof(cmd),
+        "netsh interface ipv4 set address name=\"%s\" "
+        "source=static address=%s mask=%s",
+        adapter, ip, m);
+    exec_capture(cmd, result, sizeof(result));
+
+    /* netsh returns empty on success */
+    if (result[0] == 0 ||
+        strstr(result, "Ok") ||
+        !strstr(result, "Error")) {
+        snprintf(out, n, "IP %s / %s aplicado em \"%s\".", ip, m, adapter);
+        return 1;
+    }
+
+    snprintf(out, n, "Falha ao aplicar IP: %.200s", result);
+    return 0;
+}
+
 int vpn_reset(const VpnConfig *cfg, char *out, int n) {
     char buf[4096], args[256];
 
