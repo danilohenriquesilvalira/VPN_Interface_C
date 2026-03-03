@@ -1,0 +1,114 @@
+name: Build RLS VPN (C)
+
+on:
+  push:
+    branches: [ main ]
+    tags:     [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-windows:
+    name: Build Windows (MinGW-w64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 + MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-binutils
+            nsis
+
+      - name: Generate placeholder icon (if missing)
+        shell: msys2 {0}
+        run: |
+          if [ ! -f src/icon.ico ]; then
+            # Create a minimal valid 16x16 ICO file as placeholder
+            python3 -c "
+          import struct, zlib
+
+          def make_ico():
+              # BMP header for 16x16 32bpp
+              w, h = 16, 16
+              # ICONDIR
+              header = struct.pack('<HHH', 0, 1, 1)
+              # ICONDIRENTRY
+              bmp_size = 40 + w * h * 4 + w * h // 8
+              entry = struct.pack('<BBBBHHII', w, h, 0, 0, 1, 32, bmp_size, 22)
+              # BITMAPINFOHEADER
+              bih = struct.pack('<IiiHHIIiiII', 40, w, h*2, 1, 32, 0, w*h*4, 0, 0, 0, 0)
+              # Pixel data (blue color)
+              pixels = b'\x1f\x6f\xeb\xff' * (w * h)
+              # AND mask (all 0)
+              mask = b'\x00' * (w * h // 8)
+              return header + entry + bih + pixels + mask
+
+          with open('src/icon.ico', 'wb') as f:
+              f.write(make_ico())
+          print('icon.ico created')
+          " 2>/dev/null || echo "Python not available, using empty icon"
+          fi
+
+      - name: Compile resources
+        shell: msys2 {0}
+        run: |
+          windres src/resource.rc -O coff -o src/resource.o
+
+      - name: Compile application
+        shell: msys2 {0}
+        run: |
+          gcc -Wall -O2 -Isrc -mwindows \
+            -o rls_vpn.exe \
+            src/main.c src/vpn.c src/resource.o \
+            -lcomctl32 -lgdi32 -lshcore
+          echo "Build successful: $(ls -lh rls_vpn.exe)"
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rls_vpn_windows_x64
+          path: rls_vpn.exe
+          if-no-files-found: error
+
+      - name: Build NSIS installer
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: msys2 {0}
+        run: |
+          # Copy exe to root for NSIS
+          makensis installer.nsi
+          echo "Installer built: $(ls -lh RLS_VPN_Setup.exe)"
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "RLS Automacao VPN ${{ github.ref_name }}"
+          body: |
+            ## RLS Automacao VPN - ${{ github.ref_name }}
+
+            ### Instalacao
+            1. Baixe `RLS_VPN_Setup.exe` e execute como Administrador
+            2. O instalador configura tudo automaticamente
+            3. Na primeira execucao o SoftEther VPN Client sera instalado
+
+            ### Requisitos
+            - Windows 10 ou 11 (64-bit)
+            - Permissoes de Administrador
+
+            ### Arquivos
+            - `RLS_VPN_Setup.exe` - Instalador completo (recomendado)
+            - `rls_vpn.exe` - Executavel standalone (requer SoftEther ja instalado)
+          files: |
+            rls_vpn.exe
+            RLS_VPN_Setup.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
