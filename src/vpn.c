@@ -8,6 +8,32 @@
 
 static char s_vpncmd[MAX_PATH] = {0};
 
+/* ─── Extract embedded SoftEther installer from resources ── */
+int vpn_extract_installer(char *out_path, int out_len) {
+    HRSRC   hRes  = FindResourceA(NULL, MAKEINTRESOURCEA(IDR_SE_INSTALLER), "RCDATA");
+    if (!hRes) return 0;   /* not embedded in this build */
+
+    HGLOBAL hData = LoadResource(NULL, hRes);
+    DWORD   size  = SizeofResource(NULL, hRes);
+    void   *data  = LockResource(hData);
+
+    if (!data || size < 1024) return 0; /* sanity check: must be >1KB */
+
+    char tmpdir[MAX_PATH];
+    GetTempPathA(MAX_PATH, tmpdir);
+    snprintf(out_path, out_len, "%srls_se_client.exe", tmpdir);
+
+    HANDLE hFile = CreateFileA(out_path, GENERIC_WRITE, 0, NULL,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return 0;
+
+    DWORD written = 0;
+    WriteFile(hFile, data, size, &written, NULL);
+    CloseHandle(hFile);
+
+    return (written == size);
+}
+
 /* ─── Find vpncmd.exe ──────────────────────────────── */
 static const char *find_vpncmd(void) {
     if (s_vpncmd[0]) return s_vpncmd;

@@ -4,6 +4,9 @@
 
 #include <windows.h>
 
+/* ─── Resource ID for embedded SoftEther installer ── */
+#define IDR_SE_INSTALLER  100
+
 /* ─── Default configuration ──────────────────────── */
 #define NIC_NAME        "RLS_Automacao"
 #define SERVICE_NAME    "SevpnClient"
@@ -45,6 +48,7 @@ typedef struct {
 /* ─── Public API ─────────────────────────────────── */
 void vpn_default_config(VpnConfig *cfg);
 int  vpn_is_installed(void);
+int  vpn_extract_installer(char *out_path, int out_len); /* extract embedded se_client.exe */
 int  vpn_install_silent(const char *installer_path);
 int  vpn_start_service(void);
 int  vpn_setup(const VpnConfig *cfg, char *out, int n);

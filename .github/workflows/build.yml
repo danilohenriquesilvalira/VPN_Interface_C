@@ -25,6 +25,37 @@ jobs:
           update: true
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
 
+      - name: Download SoftEther VPN Client
+        shell: pwsh
+        run: |
+          # Fetch latest stable release from SoftEtherVPN_Stable
+          $api = Invoke-RestMethod `
+            -Uri 'https://api.github.com/repos/SoftEtherVPN/SoftEtherVPN_Stable/releases/latest' `
+            -Headers @{ 'User-Agent' = 'rls-vpn-build' }
+          Write-Host "Latest SoftEther release: $($api.tag_name)"
+
+          # Find the Windows VPN Client installer asset
+          $asset = $api.assets | Where-Object {
+            $_.name -match 'vpnclient' -and $_.name -match 'windows'
+          } | Select-Object -First 1
+
+          if (-not $asset) {
+            Write-Error "No Windows VPN Client asset found in SoftEther latest release."
+            Write-Host "Available assets:"
+            $api.assets | ForEach-Object { Write-Host "  $($_.name)" }
+            exit 1
+          }
+
+          Write-Host "Downloading: $($asset.name) ($([math]::Round($asset.size/1MB,1)) MB)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile se_client.exe -UseBasicParsing
+
+          $size = (Get-Item se_client.exe).Length
+          Write-Host "Download complete: $size bytes"
+          if ($size -lt 1MB) {
+            Write-Error "Downloaded file is too small - download may have failed"
+            exit 1
+          }
+
       - name: Build
         shell: msys2 {0}
         run: |

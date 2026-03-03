@@ -17,8 +17,9 @@
 #define APP_CLASS   "RLSVPNWnd"
 #define APP_VER     "v1.0"
 
-/* ─── Custom message for thread results ─────────────── */
-#define WM_VPN_RESULT  (WM_USER + 100)
+/* ─── Custom messages ────────────────────────────────── */
+#define WM_VPN_RESULT  (WM_USER + 100)  /* op finished: wParam=ok, lParam=heap str */
+#define WM_VPN_LOG     (WM_USER + 101)  /* just log a message from background thread */
 
 /* ─── Window / Layout constants (logical px @ 96 DPI) ── */
 #define WIN_W        480
@@ -143,6 +144,15 @@ static void AddLog(const char *msg) {
     SendMessageA(h_log, WM_VSCROLL, SB_BOTTOM, 0);
 }
 
+/* Post a log message from a background thread (heap-allocates the string) */
+static void PostLog(HWND hwnd, const char *msg) {
+    char *heap = (char *)malloc(strlen(msg) + 1);
+    if (heap) {
+        strcpy(heap, msg);
+        PostMessageA(hwnd, WM_VPN_LOG, 0, (LPARAM)heap);
+    }
+}
+
 static void RefreshUI(HWND hwnd) {
     /* Status label */
     const char *state_str;
@@ -221,6 +231,44 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
     case 4: /* reset */
         ok = vpn_reset(&p->cfg, msg, sizeof(msg));
         break;
+
+    case 5: { /* auto_start: extract embedded installer → install → setup */
+        char installer[MAX_PATH] = {0};
+
+        /* Step 1: Try to extract embedded SoftEther installer from resources */
+        PostLog(p->hwnd, "A extrair instalador SoftEther incorporado...");
+        int extracted = vpn_extract_installer(installer, sizeof(installer));
+
+        if (extracted) {
+            PostLog(p->hwnd, "A instalar SoftEther VPN Client (aguarde ~30s)...");
+            int installed = vpn_install_silent(installer);
+            /* Delete the temp installer regardless */
+            DeleteFileA(installer);
+            if (!installed) {
+                strncpy(msg,
+                    "Falha ao instalar SoftEther. Execute o programa como Administrador.",
+                    sizeof(msg) - 1);
+                ok = 0;
+                break;
+            }
+            PostLog(p->hwnd, "SoftEther VPN Client instalado com sucesso!");
+        } else {
+            /* No embedded resource - check if already installed on the system */
+            if (!vpn_is_installed()) {
+                strncpy(msg,
+                    "SoftEther nao encontrado e nao ha instalador incorporado.",
+                    sizeof(msg) - 1);
+                ok = 0;
+                break;
+            }
+            PostLog(p->hwnd, "SoftEther VPN Client ja instalado no sistema.");
+        }
+
+        /* Step 2: Auto-configure NIC and VPN account */
+        PostLog(p->hwnd, "A configurar placa de rede virtual e conta VPN...");
+        ok = vpn_setup(&p->cfg, msg, sizeof(msg));
+        break;
+    }
     }
 
     /* Send result to main thread (heap string, freed in WndProc) */
@@ -485,6 +533,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_busy = FALSE;
         vpn_get_status(&g_cfg, &g_status);
         RefreshUI(hwnd);
+        return 0;
+    }
+
+    case WM_VPN_LOG: {
+        char *log_msg = (char *)lp;
+        if (log_msg) {
+            AddLog(log_msg);
+            free(log_msg);
+        }
         return 0;
     }
 
@@ -764,27 +821,13 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hprev, LPSTR cmdline, int show) {
     vpn_get_status(&g_cfg, &g_status);
     RefreshUI(g_hwnd);
 
-    if (!g_status.softether_ready) {
-        /* Look for se_client.exe next to our exe */
-        char exepath[MAX_PATH], installer[MAX_PATH];
-        GetModuleFileNameA(NULL, exepath, MAX_PATH);
-        char *last = strrchr(exepath, '\\');
-        if (last) {
-            last[1] = 0;
-            snprintf(installer, MAX_PATH, "%sse_client.exe", exepath);
-        } else {
-            strncpy(installer, "se_client.exe", MAX_PATH - 1);
-        }
-
-        if (GetFileAttributesA(installer) != INVALID_FILE_ATTRIBUTES) {
-            AddLog("A instalar SoftEther VPN Client (aguarde)...");
-            StartOp(0, installer);
-        } else {
-            AddLog("SoftEther nao encontrado. Por favor instale manualmente.");
-        }
+    if (!g_status.softether_ready || !g_status.connection_ready) {
+        /* Auto-flow: extract embedded SoftEther → install → configure NIC + account */
+        AddLog("A inicializar componentes VPN automaticamente...");
+        StartOp(5, NULL);
     } else {
         char buf[128];
-        snprintf(buf, sizeof(buf), "SoftEther encontrado. %s", g_status.message);
+        snprintf(buf, sizeof(buf), "Sistema VPN pronto. %s", g_status.message);
         AddLog(buf);
     }
 
