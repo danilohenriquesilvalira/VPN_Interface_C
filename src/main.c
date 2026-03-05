@@ -30,7 +30,15 @@
 #define IDC_LIST_ADAPTERS 201
 #define IDC_LOG           202
 #define IDC_STATUSBAR     203
-#define IDC_TOOLBAR        204
+#define IDC_TOOLBAR       204
+#define IDC_STRIP         205
+
+/* ---- Layout constants --------------------------------------------------- */
+#define TB_H   48   /* toolbar height px */
+#define STR_H  72   /* status strip height px */
+#define LOG_H  150  /* log panel height px */
+#define BTN_W  118  /* toolbar button width */
+#define BTN_H  36   /* toolbar button height */
 
 /* ---- Config dialog IDs -------------------------------------------------- */
 #define IDC_CFG_HOST 500
@@ -56,8 +64,20 @@ static BOOL     g_busy       = FALSE;
 static BOOL     g_log_vis    = TRUE;
 static VpnConfig g_cfg;
 static VpnState  g_state     = VPN_NOT_INSTALLED;
-static HFONT    g_font_ui    = NULL;
-static HFONT    g_font_mono  = NULL;
+static HFONT    g_font_ui    = NULL;   /* 18pt Segoe UI */
+static HFONT    g_font_bold  = NULL;   /* 18pt Segoe UI bold */
+static HFONT    g_font_large = NULL;   /* 26pt Segoe UI bold - status */
+static HFONT    g_font_mono  = NULL;   /* 14pt Consolas */
+static HFONT    g_font_tb    = NULL;   /* 15pt Segoe UI - toolbar */
+static HWND     g_strip      = NULL;   /* status strip panel */
+
+/* State kept for strip painting (set on UI thread only) */
+static char g_strip_state[32]  = "Iniciando...";
+static char g_strip_server[64] = "---";
+static char g_strip_hub[64]    = "---";
+static char g_strip_user[64]   = "---";
+static char g_strip_ip[64]     = "---";
+static COLORREF g_strip_color  = RGB(100,100,100);
 
 /* ---- Forward declarations ----------------------------------------------- */
 static LRESULT CALLBACK WndProc(HWND,UINT,WPARAM,LPARAM);
@@ -227,11 +247,111 @@ static DWORD WINAPI PollThread(LPVOID p)
 }
 
 /* ======================================================================
+   Status strip window proc - painted with big colored state indicator
+   ====================================================================== */
+static LRESULT CALLBACK StripProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
+{
+    (void)lp;
+    switch(msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hw, &ps);
+        RECT rc; GetClientRect(hw, &rc);
+        int W = rc.right, H = rc.bottom;
+
+        /* Background */
+        HBRUSH bg = CreateSolidBrush(RGB(245,245,248));
+        FillRect(dc, &rc, bg);
+        DeleteObject(bg);
+
+        /* Colored left indicator bar (8px wide) */
+        RECT bar = {0,0,8,H};
+        HBRUSH cb = CreateSolidBrush(g_strip_color);
+        FillRect(dc, &bar, cb);
+        DeleteObject(cb);
+
+        /* Colored status circle area (80px wide) */
+        RECT circle = {8,0,110,H};
+        HBRUSH cb2 = CreateSolidBrush(g_strip_color);
+        FillRect(dc, &circle, cb2);
+        DeleteObject(cb2);
+
+        /* State text in circle area */
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(255,255,255));
+        HFONT of = (HFONT)SelectObject(dc, g_font_large);
+        DrawTextA(dc, g_strip_state, -1, &circle,
+            DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_WORD_ELLIPSIS);
+        SelectObject(dc, of);
+
+        /* Separator */
+        HPEN pen = CreatePen(PS_SOLID,1,RGB(200,200,210));
+        HPEN op  = (HPEN)SelectObject(dc,pen);
+        MoveToEx(dc,110,4,NULL); LineTo(dc,110,H-4);
+        SelectObject(dc,op); DeleteObject(pen);
+
+        /* Info fields on the right */
+        SetTextColor(dc, RGB(30,30,30));
+        HFONT of2 = (HFONT)SelectObject(dc, g_font_bold);
+        int lx = 120, rx = W/2, rx2 = W/2+20, rx3 = (W*3)/4;
+        int row1 = 6, row2 = H/2+2;
+
+        /* Labels (bold) */
+        RECT r1 = {lx,       row1, lx+80,  row1+28}; DrawTextA(dc,"Servidor:",-1,&r1,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        RECT r2 = {rx,        row1, rx+60,  row1+28}; DrawTextA(dc,"Hub:",     -1,&r2,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        RECT r3 = {lx,       row2, lx+80,  row2+28}; DrawTextA(dc,"User:",    -1,&r3,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        RECT r4 = {rx,        row2, rx+60,  row2+28}; DrawTextA(dc,"IP VPN:", -1,&r4,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        SelectObject(dc, of2);
+
+        /* Values */
+        SetTextColor(dc, RGB(0,70,160));
+        HFONT of3 = (HFONT)SelectObject(dc, g_font_ui);
+        RECT v1 = {lx+84,  row1, rx-10,    row1+28}; DrawTextA(dc,g_strip_server,-1,&v1,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        RECT v2 = {rx+64,  row1, W-10,     row1+28}; DrawTextA(dc,g_strip_hub,  -1,&v2,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        RECT v3 = {lx+84,  row2, rx-10,    row2+28}; DrawTextA(dc,g_strip_user, -1,&v3,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        /* IP in accent color */
+        SetTextColor(dc, g_strip_color);
+        HFONT of4 = (HFONT)SelectObject(dc, g_font_bold);
+        RECT v4 = {rx+64,  row2, W-10,     row2+28}; DrawTextA(dc,g_strip_ip,   -1,&v4,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        SelectObject(dc, of4);
+        SelectObject(dc, of3);
+
+        /* Bottom separator line */
+        HPEN pen2 = CreatePen(PS_SOLID,1,RGB(180,180,190));
+        HPEN op2  = (HPEN)SelectObject(dc,pen2);
+        MoveToEx(dc,0,H-1,NULL); LineTo(dc,W,H-1);
+        SelectObject(dc,op2); DeleteObject(pen2);
+
+        EndPaint(hw, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    }
+    return DefWindowProcA(hw, msg, wp, lp);
+}
+
+/* ======================================================================
    Update ListViews from VpnStatus (runs on UI thread from WM_VPN_STATUS)
    ====================================================================== */
 static void UpdateUI(const VpnStatus *st)
 {
     g_state = st->state;
+
+    /* -- State color -------------------------------------------------- */
+    switch(st->state) {
+        case VPN_CONNECTED:      g_strip_color=RGB(34,139,34);  break;
+        case VPN_CONNECTING:     g_strip_color=RGB(200,140,0);  break;
+        case VPN_DISCONNECTED:   g_strip_color=RGB(180,30,30);  break;
+        case VPN_NOT_CONFIGURED: g_strip_color=RGB(120,60,160); break;
+        default:                 g_strip_color=RGB(90,90,100);  break;
+    }
+    strncpy(g_strip_state,  StateStr(st->state),         sizeof g_strip_state-1);
+    snprintf(g_strip_server, sizeof g_strip_server, "%s:%d", g_cfg.host, g_cfg.port);
+    strncpy(g_strip_hub,    g_cfg.hub,                   sizeof g_strip_hub-1);
+    strncpy(g_strip_user,   g_cfg.username,              sizeof g_strip_user-1);
+    strncpy(g_strip_ip,     st->local_ip[0]?st->local_ip:"---", sizeof g_strip_ip-1);
+    InvalidateRect(g_strip, NULL, TRUE);
 
     /* -- ListView: ligacoes ------------------------------------------- */
     char srv[320];
@@ -239,8 +359,8 @@ static void UpdateUI(const VpnStatus *st)
 
     if (ListView_GetItemCount(g_list_conns) == 0) {
         LVITEMA lvi = {0};
-        lvi.mask     = LVIF_TEXT;
-        lvi.pszText  = g_cfg.account_name;
+        lvi.mask    = LVIF_TEXT;
+        lvi.pszText = g_cfg.account_name;
         ListView_InsertItem(g_list_conns, &lvi);
     }
     ListView_SetItemText(g_list_conns, 0, 0, g_cfg.account_name);
@@ -248,6 +368,8 @@ static void UpdateUI(const VpnStatus *st)
     ListView_SetItemText(g_list_conns, 0, 2, srv);
     ListView_SetItemText(g_list_conns, 0, 3, g_cfg.hub);
     ListView_SetItemText(g_list_conns, 0, 4, NIC_NAME);
+    /* force redraw for color */
+    ListView_RedrawItems(g_list_conns, 0, 0);
 
     /* -- ListView: adaptadores ---------------------------------------- */
     char ip_buf[64] = "---";
@@ -263,6 +385,7 @@ static void UpdateUI(const VpnStatus *st)
     ListView_SetItemText(g_list_adaps, 0, 1,
         (char*)(st->state==VPN_CONNECTED?"Ligado":"Desligado"));
     ListView_SetItemText(g_list_adaps, 0, 2, ip_buf);
+    ListView_RedrawItems(g_list_adaps, 0, 0);
 
     /* -- Status bar --------------------------------------------------- */
     char sb0[80];
@@ -397,6 +520,9 @@ static HWND MakeListView(HWND parent, UINT id,
     ListView_SetExtendedListViewStyle(lv,
         LVS_EX_FULLROWSELECT|LVS_EX_GRIDLINES|LVS_EX_DOUBLEBUFFER);
     SendMessageA(lv, WM_SETFONT,(WPARAM)g_font_ui,FALSE);
+    /* Increase row height via a 1px transparent imagelist */
+    HIMAGELIST hIL = ImageList_Create(1, 26, ILC_COLOR, 1, 1);
+    ListView_SetImageList(lv, hIL, LVSIL_SMALL);
     LVCOLUMNA c={0};
     c.mask=LVCF_TEXT|LVCF_WIDTH|LVCF_SUBITEM;
     for(int i=0;i<ncols;i++){
@@ -414,21 +540,21 @@ static void LayoutChildren(HWND hwnd)
     RECT rc; GetClientRect(hwnd,&rc);
     int W=rc.right, H=rc.bottom;
 
-    /* Status bar first */
+    /* Status bar */
     SendMessageA(g_statusbar, WM_SIZE,0,0);
     RECT sbr; GetClientRect(g_statusbar,&sbr);
-    int sbH=sbr.bottom;
+    int sbH = sbr.bottom;
 
-    int tbH=38;
-    int content_y = tbH;
-    int content_h = H - sbH - tbH;
-    int log_h     = g_log_vis ? 130 : 0;
+    int content_y = TB_H + STR_H;
+    int content_h = H - sbH - TB_H - STR_H;
+    int log_h     = g_log_vis ? LOG_H : 0;
     int lists_h   = content_h - log_h;
     int top_h     = lists_h * 58 / 100;
     int bot_h     = lists_h - top_h;
 
-    MoveWindow(g_toolbar,    0, 0,            W, tbH,   TRUE);
-    MoveWindow(g_list_conns, 0, content_y,    W, top_h, TRUE);
+    MoveWindow(g_toolbar,    0, 0,         W, TB_H,  TRUE);
+    MoveWindow(g_strip,      0, TB_H,      W, STR_H, TRUE);
+    MoveWindow(g_list_conns, 0, content_y, W, top_h, TRUE);
     MoveWindow(g_list_adaps, 0, content_y+top_h, W, bot_h, TRUE);
 
     if (g_log_vis) {
@@ -438,8 +564,7 @@ static void LayoutChildren(HWND hwnd)
         ShowWindow(g_log, SW_HIDE);
     }
 
-    /* Resize status bar parts */
-    int parts[3] = {220, W-180, W};
+    int parts[3] = {280, W-200, W};
     SendMessageA(g_statusbar, SB_SETPARTS, 3, (LPARAM)parts);
 }
 
@@ -451,13 +576,12 @@ static LRESULT CALLBACK ToolbarWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
     switch(msg){
     case WM_CREATE: {
         HINSTANCE hI=((CREATESTRUCTA*)lp)->hInstance;
-        HFONT f=MakeFont(14,FALSE,FALSE);
         for(int i=0;i<TB_BTN_CNT;i++){
             HWND b=CreateWindowA("BUTTON",g_tbBtns[i].label,
                 WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_PUSHBUTTON,
-                6+i*112,5,106,28, hw,
+                6+i*(BTN_W+4), 6, BTN_W, BTN_H, hw,
                 (HMENU)(UINT_PTR)g_tbBtns[i].id, hI, NULL);
-            SendMessageA(b,WM_SETFONT,(WPARAM)f,FALSE);
+            SendMessageA(b,WM_SETFONT,(WPARAM)g_font_tb,FALSE);
         }
         return 0;
     }
@@ -482,8 +606,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_CREATE: {
         HINSTANCE hI=((CREATESTRUCTA*)lp)->hInstance;
-        g_font_ui   = MakeFont(15,FALSE,FALSE);
-        g_font_mono = MakeFont(13,FALSE,TRUE);
+        g_font_ui    = MakeFont(-18,FALSE,FALSE);
+        g_font_bold  = MakeFont(-18,TRUE, FALSE);
+        g_font_large = MakeFont(-24,TRUE, FALSE);
+        g_font_mono  = MakeFont(-14,FALSE,TRUE);
+        g_font_tb    = MakeFont(-15,FALSE,FALSE);
 
         /* --- Menu bar ------------------------------------------------ */
         HMENU mb=CreateMenu();
@@ -529,17 +656,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         tc.hCursor=LoadCursorA(NULL,(LPCSTR)IDC_ARROW);
         RegisterClassA(&tc);
         g_toolbar=CreateWindowA("RLS_TB","",WS_CHILD|WS_VISIBLE,
-            0,0,100,38, hwnd,(HMENU)(UINT_PTR)IDC_TOOLBAR,hI,NULL);
+            0,0,100,TB_H, hwnd,(HMENU)(UINT_PTR)IDC_TOOLBAR,hI,NULL);
+
+        /* --- Status strip ------------------------------------------- */
+        WNDCLASSA sc={0};
+        sc.lpfnWndProc  =StripProc;
+        sc.hInstance    =hI;
+        sc.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);
+        sc.lpszClassName="RLS_STRIP";
+        sc.hCursor=LoadCursorA(NULL,(LPCSTR)IDC_ARROW);
+        RegisterClassA(&sc);
+        g_strip=CreateWindowA("RLS_STRIP","",WS_CHILD|WS_VISIBLE,
+            0,TB_H,100,STR_H, hwnd,(HMENU)(UINT_PTR)IDC_STRIP,hI,NULL);
 
         /* --- ListViews ----------------------------------------------- */
         {
             const char *cols[]={"Nome da Ligacao VPN","Estado","Servidor VPN","Hub Virtual","Adaptador Virtual"};
-            const int   wids[]={220,130,260,120,150};
+            const int   wids[]={260,160,300,160,180};
             g_list_conns=MakeListView(hwnd,IDC_LIST_CONNS,cols,wids,5);
         }
         {
             const char *cols[]={"Adaptador Virtual","Estado","Endereco IP"};
-            const int   wids[]={240,130,200};
+            const int   wids[]={280,160,220};
             g_list_adaps=MakeListView(hwnd,IDC_LIST_ADAPTERS,cols,wids,3);
         }
 
@@ -566,7 +704,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         vpn_set_log_fn(vpn_log_cb,NULL);
 
         LayoutChildren(hwnd);
-        log_append("[RLS VPN v1.5.0] Interface iniciada.");
+        log_append("[RLS VPN v1.5.0] Interface iniciada. Aguardar estado VPN...");
 
         /* Polling thread (TRUE = nao dorme na primeira iteracao) */
         HANDLE ht=CreateThread(NULL,0,PollThread,(LPVOID)(UINT_PTR)TRUE,0,NULL);
@@ -632,10 +770,46 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if(wp==VK_F6) { StartOp(3,NULL,NULL); return 0; }
         break;
 
+    case WM_NOTIFY: {
+        NMHDR *hdr = (NMHDR*)lp;
+        if (hdr->code == NM_CUSTOMDRAW &&
+            (hdr->hwndFrom==g_list_conns || hdr->hwndFrom==g_list_adaps)) {
+            NMLVCUSTOMDRAW *cd = (NMLVCUSTOMDRAW*)lp;
+            if (cd->nmcd.dwDrawStage == CDDS_PREPAINT)
+                return CDRF_NOTIFYITEMDRAW;
+            if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                /* Color row based on VPN state */
+                switch(g_state) {
+                case VPN_CONNECTED:
+                    cd->clrTextBk = RGB(220,255,220);
+                    cd->clrText   = RGB(0,100,0);
+                    break;
+                case VPN_CONNECTING:
+                    cd->clrTextBk = RGB(255,248,210);
+                    cd->clrText   = RGB(130,90,0);
+                    break;
+                case VPN_DISCONNECTED:
+                    cd->clrTextBk = RGB(255,225,225);
+                    cd->clrText   = RGB(140,0,0);
+                    break;
+                default:
+                    cd->clrTextBk = RGB(240,240,245);
+                    cd->clrText   = RGB(80,80,100);
+                    break;
+                }
+                return CDRF_NEWFONT;
+            }
+        }
+        return CDRF_DODEFAULT;
+    }
+
     case WM_DESTROY:
         g_hwnd=NULL;
         DeleteObject(g_font_ui);
+        DeleteObject(g_font_bold);
+        DeleteObject(g_font_large);
         DeleteObject(g_font_mono);
+        DeleteObject(g_font_tb);
         PostQuitMessage(0);
         return 0;
     }
