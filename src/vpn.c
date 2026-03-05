@@ -814,23 +814,36 @@ void vpn_get_status(const VpnConfig *cfg, VpnStatus *s) {
 /* ─── Find VPN virtual adapter name via PowerShell ── */
 /* Uses the same strategy as get_vpn_ip() - reliable across all Windows versions */
 static int find_vpn_adapter(char *name_out, int name_len) {
-    char ps[2048];
-    /* Confirmed: SoftEther VPN Client adapter has
-         InterfaceAlias       = "[NIC_NAME] - VPN Client"  (ex: "VPN - VPN Client")
-         InterfaceDescription = "VPN Client Adapter - [NIC_NAME]"
-       Search by description "*VPN Client Adapter*" first (most specific),
-       then by alias containing NIC_NAME.                                  */
+    /* ── Step 1: ask SoftEther vpncmd for the exact NIC name ──────────
+       This is the most reliable source — it's the name we created via
+       NicCreate, e.g. "VPN". Fallback to NIC_NAME if vpncmd is down.   */
+    char nic_real[128] = {0};
+    {
+        char nl[4096] = {0};
+        run_vpncmd("localhost /CLIENT /CMD NicList", nl, sizeof(nl));
+        parse_first_nic_name(nl, nic_real, sizeof(nic_real));
+    }
+    if (nic_real[0] == '\0')
+        strncpy(nic_real, NIC_NAME, sizeof(nic_real) - 1);
+
+    /* ── Step 2: match ONLY SoftEther-specific adapter names ───────────
+       SoftEther always creates:
+         InterfaceAlias       = "{nic_name} - VPN Client"   (exact)
+         InterfaceDescription = "VPN Client Adapter - {nic_name}"
+       We deliberately avoid "*TAP-Windows*", "*VPN*" and other generic
+       patterns because OpenVPN / WireGuard / other VPN software also
+       creates adapters that match those broad terms.                    */
+    char ps[1024];
     snprintf(ps, sizeof(ps),
         "powershell.exe -NonInteractive -WindowStyle Hidden -Command \""
-        "$a = Get-NetAdapter | Where-Object { "
-        "  $_.InterfaceDescription -like '*VPN Client Adapter*' -or "
-        "  $_.InterfaceDescription -like '*SoftEther*' -or "
-        "  $_.InterfaceDescription -like '*TAP-Windows*' -or "
-        "  $_.InterfaceAlias       -like '*" NIC_NAME " - VPN Client*' -or "
-        "  $_.InterfaceAlias       -like '*" NIC_NAME "*' "
+        "$n = '%s'; "
+        "$a = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { "
+        "  $_.InterfaceAlias       -eq ($n + ' - VPN Client') -or "
+        "  $_.InterfaceDescription -like ('VPN Client Adapter - ' + $n + '*') "
         "} | Select-Object -First 1; "
         "if ($a) { Write-Output $a.InterfaceAlias } "
-        "else    { Write-Output 'NOTFOUND' }\"");
+        "else    { Write-Output 'NOTFOUND' }\"",
+        nic_real);
 
     char buf[512] = {0};
     exec_capture(ps, buf, sizeof(buf));
