@@ -217,6 +217,20 @@ jobs:
       - name: Build EXE (C + C++ WebView2)
         shell: msys2 {0}
         run: |
+          # ── Create MinGW import library for WebView2Loader.dll ──────────────
+          # WebView2Loader.dll was downloaded to workspace root in the NuGet step.
+          # MinGW cannot use the MSVC .lib; dlltool generates a compatible .a file.
+          cat > WebView2Loader.def << 'EOF'
+          LIBRARY WebView2Loader.dll
+          EXPORTS
+              CreateCoreWebView2EnvironmentWithOptions
+              CreateCoreWebView2Environment
+              GetAvailableCoreWebView2BrowserVersionString
+              CompareBrowserVersions
+          EOF
+          dlltool -D WebView2Loader.dll -d WebView2Loader.def -l libWebView2Loader.a
+          echo "libWebView2Loader.a created: $(ls -lh libWebView2Loader.a)"
+
           # Resource (embeds ui.html as RCDATA 102)
           windres src/resource.rc -O coff -o src/resource.o
 
@@ -228,9 +242,13 @@ jobs:
           g++ -Wall -O2 -Isrc -mwindows -std=c++17 -c -o src/webview_bridge.o src/webview_bridge.cpp
 
           # Link with g++ to handle C++ symbols
+          # -L.            : find libWebView2Loader.a in workspace root
+          # -lWebView2Loader: resolves CreateCoreWebView2EnvironmentWithOptions
+          # -luuid          : resolves IID_IUnknown and other COM GUIDs (MinGW)
           g++ -mwindows -o rls_vpn.exe \
             src/main.o src/vpn.o src/webview_bridge.o src/resource.o \
-            -lcomctl32 -lgdi32 -lshcore -lole32 -lgdiplus -lstdc++ -lshell32
+            -L. -lWebView2Loader \
+            -lcomctl32 -lgdi32 -lshcore -lole32 -luuid -lgdiplus -lstdc++ -lshell32
 
           ls -lh rls_vpn.exe
 
