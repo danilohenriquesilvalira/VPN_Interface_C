@@ -5,7 +5,7 @@
 #include <windows.h>
 
 /* ─── Default configuration ──────────────────────── */
-#define NIC_NAME        "RLS_Automacao"
+#define NIC_NAME        "VPN"     /* nome padrao para criar nova NIC */
 #define SERVICE_NAME    "SevpnClient"
 #define ACCOUNT_NAME    "RLS_Automacao"
 #define DEFAULT_HOST    "10.201.114.222"
@@ -40,6 +40,16 @@ typedef struct {
     char     local_ip[64];
     char     message[512];
     char     raw_status[1024];
+    /* Informacao real da placa virtual (populada a cada poll) */
+    char     nic_name[64];      /* nome SoftEther, ex: "VPN"              */
+    char     nic_windows[256];  /* nome Windows, ex: "VPN - VPN Client"   */
+    char     nic_mac[32];       /* MAC address, ex: "00-AC-BB-CC-DD-EE"   */
+    char     nic_status[32];    /* estado adaptador: "Enabled"/"Disabled"  */
+    /* Informacao real da ligacao (parsed do AccountStatusGet) */
+    char     server_display[272]; /* "host:port" real do SoftEther        */
+    char     hub_display[64];     /* hub real do SoftEther                */
+    char     status_detail[128];  /* status string bruto do SoftEther     */
+    char     vpn_user[64];        /* utilizador confirmado pelo SoftEther  */
 } VpnStatus;
 
 /* ─── Log callback ──────────────────────────────── */
