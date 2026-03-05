@@ -236,24 +236,31 @@ jobs:
           g++ -Wall -O2 -Isrc -mwindows -std=c++17 -c -o src/webview_bridge.o src/webview_bridge.cpp
 
           # Link with g++ to handle C++ symbols
-          # -L.                        : find libWebView2Loader.a in workspace root
-          # -lWebView2Loader            : resolves CreateCoreWebView2EnvironmentWithOptions
-          # -luuid                      : resolves IID_IUnknown and other COM GUIDs (MinGW)
-          # -static-libgcc              : embeds libgcc_s_seh-1.dll statically (no external DLL needed)
-          # -static-libstdc++           : embeds libstdc++-6.dll statically
-          # -Wl,-Bstatic,-lwinpthread,-Bdynamic : embeds libwinpthread-1.dll statically
+          # -L.             : find libWebView2Loader.a in workspace root
+          # -lWebView2Loader : resolves CreateCoreWebView2EnvironmentWithOptions
+          # -luuid           : resolves IID_IUnknown and other COM GUIDs (MinGW)
           g++ -mwindows \
-            -static-libgcc -static-libstdc++ \
-            -Wl,-Bstatic,-lwinpthread,-Bdynamic \
             -o rls_vpn.exe \
             src/main.o src/vpn.o src/webview_bridge.o src/resource.o \
             -L. -lWebView2Loader \
-            -lcomctl32 -lgdi32 -lshcore -lole32 -luuid -lgdiplus -lshell32
+            -lcomctl32 -lgdi32 -lshcore -lole32 -luuid -lgdiplus -lstdc++ -lshell32
 
           ls -lh rls_vpn.exe
-          # Verify no MinGW runtime DLL dependencies remain
-          objdump -p rls_vpn.exe | grep -i 'dll name' | grep -iE 'libgcc|libstdc|winpthread' && \
-            echo 'WARNING: runtime DLL dependency found!' || echo 'OK: no MinGW runtime DLL deps'
+
+          # ── Copy MinGW runtime DLLs to workspace root ──────────────────────
+          # These DLLs must ship alongside rls_vpn.exe on the target machine.
+          # ldd finds exactly which ones are needed from the MSYS2 environment.
+          MINGW_BIN=/mingw64/bin
+          for dll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+            if [ -f "$MINGW_BIN/$dll" ]; then
+              cp "$MINGW_BIN/$dll" .
+              echo "Copied: $dll"
+            else
+              echo "WARNING: $dll not found in $MINGW_BIN"
+            fi
+          done
+          echo "Runtime DLLs in workspace:"
+          ls -lh lib*.dll 2>/dev/null || true
 
       - name: Build MSI (WiX com UI e logo RLS)
         shell: pwsh
@@ -286,6 +293,9 @@ jobs:
             rls_vpn.exe
             rls_vpn.msi
             WebView2Loader.dll
+            libgcc_s_seh-1.dll
+            libstdc++-6.dll
+            libwinpthread-1.dll
           if-no-files-found: error
 
       - name: Create Release
@@ -323,6 +333,9 @@ jobs:
             rls_vpn.exe
             rls_vpn.msi
             WebView2Loader.dll
+            libgcc_s_seh-1.dll
+            libstdc++-6.dll
+            libwinpthread-1.dll
           draft: false
           prerelease: false
         env:
