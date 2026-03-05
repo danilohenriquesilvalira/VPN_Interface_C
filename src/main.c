@@ -30,6 +30,7 @@
 #define IDC_LIST_ADAPTERS 201
 #define IDC_LOG           202
 #define IDC_STATUSBAR     203
+#define IDC_TOOLBAR        204
 
 /* ---- Config dialog IDs -------------------------------------------------- */
 #define IDC_CFG_HOST 500
@@ -242,11 +243,11 @@ static void UpdateUI(const VpnStatus *st)
         lvi.pszText  = g_cfg.account_name;
         ListView_InsertItem(g_list_conns, &lvi);
     }
-    ListView_SetItemTextA(g_list_conns, 0, 0, g_cfg.account_name);
-    ListView_SetItemTextA(g_list_conns, 0, 1, (char*)StateStr(st->state));
-    ListView_SetItemTextA(g_list_conns, 0, 2, srv);
-    ListView_SetItemTextA(g_list_conns, 0, 3, g_cfg.hub);
-    ListView_SetItemTextA(g_list_conns, 0, 4, NIC_NAME);
+    ListView_SetItemText(g_list_conns, 0, 0, g_cfg.account_name);
+    ListView_SetItemText(g_list_conns, 0, 1, (char*)StateStr(st->state));
+    ListView_SetItemText(g_list_conns, 0, 2, srv);
+    ListView_SetItemText(g_list_conns, 0, 3, g_cfg.hub);
+    ListView_SetItemText(g_list_conns, 0, 4, NIC_NAME);
 
     /* -- ListView: adaptadores ---------------------------------------- */
     char ip_buf[64] = "---";
@@ -258,10 +259,10 @@ static void UpdateUI(const VpnStatus *st)
         lvi.pszText = NIC_NAME;
         ListView_InsertItem(g_list_adaps, &lvi);
     }
-    ListView_SetItemTextA(g_list_adaps, 0, 0, NIC_NAME);
-    ListView_SetItemTextA(g_list_adaps, 0, 1,
+    ListView_SetItemText(g_list_adaps, 0, 0, NIC_NAME);
+    ListView_SetItemText(g_list_adaps, 0, 1,
         (char*)(st->state==VPN_CONNECTED?"Ligado":"Desligado"));
-    ListView_SetItemTextA(g_list_adaps, 0, 2, ip_buf);
+    ListView_SetItemText(g_list_adaps, 0, 2, ip_buf);
 
     /* -- Status bar --------------------------------------------------- */
     char sb0[80];
