@@ -1,0 +1,7 @@
+[Unit]
+Description=ZeroTier Watchdog - reinicia se OFFLINE
+After=zerotier-one.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zerotier-watchdog.sh

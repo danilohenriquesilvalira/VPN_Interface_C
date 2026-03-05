@@ -1,0 +1,16 @@
+[Unit]
+Description=SoftEther VPN Server (Layer 2 Bridge para rede local)
+After=network-online.target zerotier-one.service
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=/home/rls/vpnserver
+ExecStart=/home/rls/vpnserver/vpnserver start
+ExecStop=/home/rls/vpnserver/vpnserver stop
+Restart=always
+RestartSec=15
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

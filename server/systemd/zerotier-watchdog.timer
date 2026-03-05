@@ -1,0 +1,10 @@
+[Unit]
+Description=ZeroTier Watchdog Timer (a cada 2 minutos)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+Unit=zerotier-watchdog.service
+
+[Install]
+WantedBy=timers.target
