@@ -11,8 +11,8 @@
 
 /* Version info */
 VS_VERSION_INFO VERSIONINFO
-  FILEVERSION     1,0,2,0
-  PRODUCTVERSION  1,0,2,0
+  FILEVERSION     1,2,0,0
+  PRODUCTVERSION  1,2,0,0
   FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
   FILEFLAGS       0
   FILEOS          VOS_NT_WINDOWS32
@@ -25,12 +25,12 @@ BEGIN
     BEGIN
       VALUE "CompanyName",      "RLS Automacao\0"
       VALUE "FileDescription",  "RLS Automacao VPN Client\0"
-      VALUE "FileVersion",      "1.0.2.0\0"
+      VALUE "FileVersion",      "1.2.0.0\0"
       VALUE "InternalName",     "rls_vpn\0"
       VALUE "LegalCopyright",   "Copyright 2026 RLS Automacao\0"
       VALUE "OriginalFilename", "rls_vpn.exe\0"
       VALUE "ProductName",      "RLS Automacao VPN\0"
-      VALUE "ProductVersion",   "1.0.2\0"
+      VALUE "ProductVersion",   "1.2.0\0"
     END
   END
   BLOCK "VarFileInfo"

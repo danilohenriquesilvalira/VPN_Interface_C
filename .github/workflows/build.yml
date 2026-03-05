@@ -34,16 +34,11 @@ jobs:
               -Uri 'https://api.github.com/repos/SoftEtherVPN/SoftEtherVPN_Stable/releases/latest' `
               -Headers @{ 'User-Agent' = 'rls-vpn-build' }
             Write-Host "Latest SoftEther release: $($api.tag_name)"
-            Write-Host "Available assets:"
-            $api.assets | ForEach-Object { Write-Host "  $($_.name)" }
-
-            # Match Windows VPN Client installer (various naming conventions)
             $asset = $api.assets | Where-Object {
               ($_.name -match 'vpnclient' -or $_.name -match 'VPN.Client') -and
               ($_.name -match 'windows'   -or $_.name -match 'Windows')    -and
               ($_.name -match '\.exe$'    -or $_.name -match '\.msi$')
             } | Select-Object -First 1
-
             if ($asset) {
               Write-Host "Downloading: $($asset.name)"
               Invoke-WebRequest -Uri $asset.browser_download_url -OutFile se_client.exe -UseBasicParsing
@@ -55,7 +50,7 @@ jobs:
             Write-Host "GitHub API failed: $_"
           }
 
-          # Fallback: SoftEther official download (v4.43 stable)
+          # Fallback URLs
           Write-Host "Trying fallback URL..."
           $urls = @(
             'https://github.com/SoftEtherVPN/SoftEtherVPN_Stable/releases/download/v4.43-9799/softether-vpnclient-v4.43-9799-rtm-2023.08.31-windows-x86_64.exe',
@@ -76,6 +71,108 @@ jobs:
           Write-Error "Could not download SoftEther VPN Client installer."
           exit 1
 
+      - name: Generate installer graphics (banner + dialog BMP com logo RLS)
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+
+          # Banner (493x58): topo de cada pagina do instalador
+          $bmp = New-Object System.Drawing.Bitmap(493, 58)
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+          $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+
+          # Fundo escuro
+          $g.Clear([System.Drawing.Color]::FromArgb(17, 22, 30))
+
+          # Barra azul no topo (3px)
+          $accentBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(31, 111, 235))
+          $g.FillRectangle($accentBrush, 0, 0, 493, 3)
+
+          # Linha separadora no fundo
+          $sepPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(48, 54, 61), 1)
+          $g.DrawLine($sepPen, 0, 57, 493, 57)
+
+          # Circulo "logo" RLS (fallback se PNG nao disponivel)
+          $circleBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(31, 111, 235))
+          $g.FillEllipse($circleBrush, 10, 8, 40, 40)
+          $logoFont = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+          $whiteBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+          $sf = New-Object System.Drawing.StringFormat
+          $sf.Alignment = [System.Drawing.StringAlignment]::Center
+          $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+          $g.DrawString("R", $logoFont, $whiteBrush, (New-Object System.Drawing.RectangleF(10, 8, 40, 40)), $sf)
+
+          # Titulo
+          $titleFont = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
+          $g.DrawString("RLS Automacao VPN", $titleFont, $whiteBrush, 60, 10)
+
+          # Subtitulo
+          $subFont = New-Object System.Drawing.Font("Segoe UI", 9)
+          $dimBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(139, 148, 158))
+          $g.DrawString("Sistema VPN Industrial  |  v1.2.0", $subFont, $dimBrush, 62, 34)
+
+          $bmp.Save("src\banner.bmp", [System.Drawing.Imaging.ImageFormat]::Bmp)
+          $g.Dispose(); $bmp.Dispose()
+          Write-Host "banner.bmp criado: 493x58"
+
+          # Dialog bitmap (493x312): fundo da pagina Welcome e Finish
+          $dlg = New-Object System.Drawing.Bitmap(493, 312)
+          $gd = [System.Drawing.Graphics]::FromImage($dlg)
+          $gd.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+          $gd.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+
+          # Fundo direito (claro)
+          $gd.Clear([System.Drawing.Color]::FromArgb(240, 242, 245))
+
+          # Painel esquerdo escuro (170px)
+          $leftBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(13, 17, 23))
+          $gd.FillRectangle($leftBrush, 0, 0, 170, 312)
+
+          # Barra azul no topo do painel esquerdo
+          $accentBrush2 = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(31, 111, 235))
+          $gd.FillRectangle($accentBrush2, 0, 0, 170, 4)
+
+          # Separador vertical
+          $sepPen2 = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(31, 111, 235), 2)
+          $gd.DrawLine($sepPen2, 170, 0, 170, 312)
+
+          # Circulo grande com "R"
+          $circleBrush2 = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(31, 111, 235))
+          $gd.FillEllipse($circleBrush2, 35, 80, 100, 100)
+          $bigFont = New-Object System.Drawing.Font("Segoe UI", 38, [System.Drawing.FontStyle]::Bold)
+          $whiteBrush2 = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+          $sf2 = New-Object System.Drawing.StringFormat
+          $sf2.Alignment = [System.Drawing.StringAlignment]::Center
+          $sf2.LineAlignment = [System.Drawing.StringAlignment]::Center
+          $gd.DrawString("R", $bigFont, $whiteBrush2, (New-Object System.Drawing.RectangleF(35, 80, 100, 100)), $sf2)
+
+          # Texto RLS
+          $rlsFont = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+          $dimBrush2 = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(139, 148, 158))
+          $gd.DrawString("RLS", $rlsFont, $whiteBrush2, 55, 196)
+          $subFont2 = New-Object System.Drawing.Font("Segoe UI", 9)
+          $gd.DrawString("Automacao", $subFont2, $dimBrush2, 38, 222)
+          $gd.DrawString("VPN Client", $subFont2, $dimBrush2, 38, 240)
+          $gd.DrawString("v1.2.0", $subFont2, $dimBrush2, 60, 260)
+
+          $dlg.Save("src\dialog.bmp", [System.Drawing.Imaging.ImageFormat]::Bmp)
+          $gd.Dispose(); $dlg.Dispose()
+          Write-Host "dialog.bmp criado: 493x312"
+
+      - name: Generate license RTF (necessario para WixUI_InstallDir)
+        shell: pwsh
+        run: |
+          $rtf = '{\rtf1\ansi\deff0{\fonttbl{\f0 Segoe UI;}}' +
+                 '\f0\fs20 ' +
+                 'RLS Automacao VPN - Licenca de Utilizacao\par\par' +
+                 'Este software e propriedade da RLS Automacao.\par' +
+                 'A utilizacao e permitida apenas em equipamentos autorizados pela RLS Automacao.\par\par' +
+                 'Ao instalar, aceita os termos desta licenca.\par' +
+                 '(c) 2026 RLS Automacao. Todos os direitos reservados.\par}'
+          Set-Content -Path "src\license.rtf" -Value $rtf -Encoding ASCII
+          Write-Host "license.rtf criado"
+
       - name: Build EXE
         shell: msys2 {0}
         run: |
@@ -85,26 +182,28 @@ jobs:
             -lcomctl32 -lgdi32 -lshcore -lole32 -lgdiplus
           ls -lh rls_vpn.exe
 
-      - name: Build MSI (WiX)
+      - name: Build MSI (WiX com UI e logo RLS)
         shell: pwsh
         run: |
-          # Locate WiX Toolset bin directory
+          # Localiza WiX Toolset
           $wixDir = Get-ChildItem "C:\Program Files (x86)" -Filter "WiX Toolset*" -Directory |
                     Sort-Object Name -Descending | Select-Object -First 1
-          if (-not $wixDir) { throw "WiX Toolset not found in Program Files (x86)" }
+          if (-not $wixDir) { throw "WiX Toolset nao encontrado em Program Files (x86)" }
           $wix = Join-Path $wixDir.FullName "bin"
           Write-Host "WiX: $wix"
 
-          # Compile
-          & "$wix\candle.exe" -arch x64 installer.wxs -o installer.wixobj
-          if ($LASTEXITCODE -ne 0) { throw "candle.exe failed with exit $LASTEXITCODE" }
+          # Compila com WixUIExtension para UI com branding
+          & "$wix\candle.exe" -arch x64 installer.wxs -o installer.wixobj `
+            -ext "$wix\WixUIExtension.dll"
+          if ($LASTEXITCODE -ne 0) { throw "candle.exe falhou com codigo $LASTEXITCODE" }
 
-          # Link
-          & "$wix\light.exe" installer.wixobj -o rls_vpn.msi
-          if ($LASTEXITCODE -ne 0) { throw "light.exe failed with exit $LASTEXITCODE" }
+          # Linka com WixUIExtension
+          & "$wix\light.exe" installer.wixobj -o rls_vpn.msi `
+            -ext "$wix\WixUIExtension.dll"
+          if ($LASTEXITCODE -ne 0) { throw "light.exe falhou com codigo $LASTEXITCODE" }
 
           $sz = [math]::Round((Get-Item rls_vpn.msi).Length / 1MB, 1)
-          Write-Host "MSI built successfully: $sz MB"
+          Write-Host "MSI compilado com sucesso: $sz MB"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -123,13 +222,24 @@ jobs:
           body: |
             ## RLS Automacao VPN ${{ github.ref_name }}
 
+            ### O que ha de novo nesta versao
+            - Interface completamente redesenhada — visual profissional com tema escuro
+            - Barra de progresso em tempo real durante configuracao e instalacao
+            - Indicador de passo ([1/5]...[5/5]) visivel durante o setup
+            - Instalacao in-app do SoftEther: se `se_client.exe` estiver presente, o proprio app instala sem precisar de passos manuais
+            - Botao principal LIGAR/DESLIGAR de largura completa com realce ao hover
+            - Header com barra de acento azul e logo RLS
+            - Card de estado com barra lateral colorida (verde/vermelho/laranja)
+            - Instalador MSI com identidade visual RLS (banner e dialog personalizados)
+            - Atalhos no Ambiente de Trabalho e Menu Iniciar
+
             ### Como instalar
             1. Baixe **`rls_vpn.msi`** (recomendado)
             2. Execute o MSI como **Administrador**
-            3. O SoftEther VPN Client e instalado automaticamente
-            4. Abre o atalho **RLS Automacao VPN** no Ambiente de Trabalho
+            3. O SoftEther VPN Client e instalado automaticamente durante o MSI
+            4. Abra o atalho **RLS Automacao VPN** no Ambiente de Trabalho
 
-            > **Alternativa:** Se ja tiver o SoftEther instalado, podes usar apenas `rls_vpn.exe`
+            > **Alternativa:** Se ja tiver o SoftEther instalado, pode usar apenas `rls_vpn.exe`
 
             ### Requisitos
             - Windows 10 / 11 (64-bit)

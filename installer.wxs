@@ -4,7 +4,7 @@
   <Product Id="*"
            Name="RLS Automacao VPN"
            Language="1033"
-           Version="1.0.1.0"
+           Version="1.2.0.0"
            Manufacturer="RLS Automacao"
            UpgradeCode="{7A4E9C2F-3B1D-4E6A-8C5F-9D2B1A3E7F4C}">
 
@@ -12,28 +12,39 @@
              Compressed="yes"
              InstallScope="perMachine"
              Platform="x64"
-             Description="RLS Automacao VPN Client"
+             Description="RLS Automacao VPN Client v1.2.0"
              Comments="Instala o cliente VPN da RLS Automacao com SoftEther incluido" />
 
-    <!-- Upgrade handling: replace older versions automatically -->
+    <!-- Upgrade: substitui versoes anteriores automaticamente -->
     <MajorUpgrade DowngradeErrorMessage="Uma versao mais recente ja esta instalada." />
     <MediaTemplate EmbedCab="yes" />
 
-    <!-- App icon for Add/Remove Programs -->
+    <!-- Icone RLS no Adicionar/Remover Programas -->
     <Icon Id="AppIcon.ico" SourceFile="src\icon.ico" />
-    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
-    <Property Id="ARPHELPLINK"    Value="https://github.com/danilohenriquesilvalira/VPN_Interface_C" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/danilohenriquesilvalira/VPN_Interface_C" />
+    <Property Id="ARPPRODUCTICON"   Value="AppIcon.ico" />
+    <Property Id="ARPHELPLINK"      Value="https://github.com/danilohenriquesilvalira/VPN_Interface_C" />
+    <Property Id="ARPURLINFOABOUT"  Value="https://github.com/danilohenriquesilvalira/VPN_Interface_C" />
+    <Property Id="ARPCONTACT"       Value="RLS Automacao" />
+    <Property Id="ARPCOMMENTS"      Value="Sistema VPN Industrial - RLS Automacao" />
+
+    <!-- UI com branding RLS: banner (493x58) e dialog (493x312) -->
+    <WixVariable Id="WixUIBannerBmp"  Value="src\banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp"  Value="src\dialog.bmp" />
+
+    <!-- Licenca (texto simples) -->
+    <WixVariable Id="WixUILicenseRtf" Value="src\license.rtf" />
+
+    <UIRef Id="WixUI_InstallDir" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
 
     <Feature Id="ProductFeature" Title="RLS Automacao VPN" Level="1">
       <ComponentGroupRef Id="AppComponents" />
     </Feature>
 
     <!--
-      Custom action: run SoftEther installer silently right after files are placed.
-      FileKey="SEInstallerFile" resolves to the installed path of se_client.exe.
-      Execute="deferred" + Impersonate="no" = runs as SYSTEM (needed for driver install).
-      Return="ignore" = don't fail MSI even if SoftEther installer returns non-zero.
+      Custom action: instala SoftEther silenciosamente apos copia dos ficheiros.
+      Execute="deferred" + Impersonate="no" = corre como SYSTEM (necessario para driver).
+      Return="ignore" = nao falha o MSI se o SoftEther retornar codigo nao-zero.
     -->
     <CustomAction Id="InstallSoftEther"
                   FileKey="SEInstallerFile"
@@ -43,13 +54,13 @@
                   Impersonate="no" />
 
     <InstallExecuteSequence>
-      <!-- Only on first install, not on uninstall or repair -->
+      <!-- Apenas na primeira instalacao, nao em desinstalacao ou reparacao -->
       <Custom Action="InstallSoftEther" After="InstallFiles">NOT Installed AND NOT REMOVE</Custom>
     </InstallExecuteSequence>
 
   </Product>
 
-  <!-- Directory structure -->
+  <!-- Estrutura de diretorios -->
   <Fragment>
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
@@ -62,26 +73,26 @@
     </Directory>
   </Fragment>
 
-  <!-- Components -->
+  <!-- Componentes -->
   <Fragment>
     <ComponentGroup Id="AppComponents" Directory="INSTALLFOLDER">
 
-      <!-- Main application exe -->
+      <!-- Executavel principal -->
       <Component Id="MainExeComp" Guid="{3B1E5C7A-8D4F-2A6E-9C3B-5F7D1A2E8C4B}">
         <File Id="MainExeFile" Source="rls_vpn.exe" KeyPath="yes" />
       </Component>
 
-      <!-- SoftEther installer (bundled) -->
+      <!-- Instalador SoftEther (incluido no MSI) -->
       <Component Id="SEInstallerComp" Guid="{8C5F2A1E-4D7B-6E3C-A9F2-7B4D1C8E5A3F}">
         <File Id="SEInstallerFile" Source="se_client.exe" KeyPath="yes" />
       </Component>
 
-      <!-- Desktop shortcut -->
+      <!-- Atalho no Ambiente de Trabalho -->
       <Component Id="DesktopShortcutComp" Guid="{2D8A4F7C-1E5B-3A9D-F6C2-4B8E1D7A5F9C}">
         <Shortcut Id="DesktopShortcut"
                   Directory="DesktopFolder"
                   Name="RLS Automacao VPN"
-                  Description="Cliente VPN da RLS Automacao"
+                  Description="Sistema VPN Industrial - RLS Automacao"
                   Target="[INSTALLFOLDER]rls_vpn.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="AppIcon.ico" />
@@ -92,12 +103,12 @@
                        KeyPath="yes" />
       </Component>
 
-      <!-- Start Menu shortcut -->
+      <!-- Atalho no Menu Iniciar -->
       <Component Id="StartMenuShortcutComp" Guid="{6E3B9A5D-7F2C-4D8B-E1A4-9C5F2B7D3E8A}">
         <Shortcut Id="StartMenuShortcut"
                   Directory="AppMenuFolder"
                   Name="RLS Automacao VPN"
-                  Description="Cliente VPN da RLS Automacao"
+                  Description="Sistema VPN Industrial - RLS Automacao"
                   Target="[INSTALLFOLDER]rls_vpn.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="AppIcon.ico" />

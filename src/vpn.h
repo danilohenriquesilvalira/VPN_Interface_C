@@ -42,6 +42,12 @@ typedef struct {
     char     raw_status[1024];
 } VpnStatus;
 
+/* ─── Log callback ──────────────────────────────── */
+/* Register a function to receive real-time log messages from background
+   operations (setup, connect, disconnect).  Called on worker threads. */
+typedef void (*VpnLogFn)(const char *msg, void *ctx);
+void vpn_set_log_fn(VpnLogFn fn, void *ctx);
+
 /* ─── Public API ─────────────────────────────────── */
 void vpn_default_config(VpnConfig *cfg);
 int  vpn_is_installed(void);
@@ -52,6 +58,11 @@ int  vpn_connect(const VpnConfig *cfg, char *out, int n);
 int  vpn_disconnect(const VpnConfig *cfg, char *out, int n);
 void vpn_get_status(const VpnConfig *cfg, VpnStatus *s);
 int  vpn_reset(const VpnConfig *cfg, char *out, int n);
+
+/* Returns the current IPv4 address of the VPN virtual adapter.
+   Writes "Placa sem IP" when the adapter has no valid address.
+   ip_out must be at least 64 bytes. */
+void vpn_get_nic_ip(char *ip_out, int ip_len);
 
 /* Apply a static IP to the VPN virtual adapter via netsh.
    Searches for the VPN adapter automatically.

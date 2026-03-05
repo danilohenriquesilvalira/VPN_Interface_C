@@ -8,6 +8,19 @@
 
 static char s_vpncmd[MAX_PATH] = {0};
 
+/* ─── Log callback (called on worker threads) ───────── */
+static VpnLogFn  s_log_fn  = NULL;
+static void     *s_log_ctx = NULL;
+
+void vpn_set_log_fn(VpnLogFn fn, void *ctx) {
+    s_log_fn  = fn;
+    s_log_ctx = ctx;
+}
+
+static void vpn_log(const char *msg) {
+    if (s_log_fn) s_log_fn(msg, s_log_ctx);
+}
+
 /* ─── Find vpncmd.exe ──────────────────────────────── */
 static const char *find_vpncmd(void) {
     if (s_vpncmd[0]) return s_vpncmd;
@@ -104,10 +117,13 @@ static void sc_cmd(const char *args) {
 /* ─── Wait for SevpnClient to respond ─────────────── */
 static int wait_for_service(int max_secs) {
     char out[4096];
+    char logbuf[64];
     for (int i = 0; i < max_secs; i++) {
         out[0] = 0;
         run_vpncmd("localhost /CLIENT /CMD NicList", out, sizeof(out));
         if (strstr(out, "The command completed")) return 1;
+        snprintf(logbuf, sizeof(logbuf), "Aguardando servico VPN... (%d/%d)", i + 1, max_secs);
+        vpn_log(logbuf);
         Sleep(1000);
     }
     return 0;
@@ -149,43 +165,54 @@ int vpn_install_silent(const char *installer_path) {
 int vpn_setup(const VpnConfig *cfg, char *out, int n) {
     char buf[4096];
 
+    vpn_log("[1/5] Iniciando servico SoftEther VPN Client...");
     vpn_start_service();
-    if (!wait_for_service(30)) {
-        snprintf(out, n, "Servico VPN nao iniciou. Reinicia o Windows.");
+    if (!wait_for_service(20)) {
+        snprintf(out, n, "Servico VPN nao iniciou em 20s. Reinicia o Windows e tenta novamente.");
+        vpn_log(out);
         return 0;
     }
+    vpn_log("[1/5] Servico SoftEther OK.");
 
     /* Check if NIC already exists */
+    vpn_log("[2/5] Verificando placa de rede virtual " NIC_NAME "...");
     buf[0] = 0;
     run_vpncmd("localhost /CLIENT /CMD NicList", buf, sizeof(buf));
     int nic_exists = strstr(buf, NIC_NAME) != NULL;
 
-    if (!nic_exists) {
+    if (nic_exists) {
+        vpn_log("[2/5] Placa " NIC_NAME " ja existe, reutilizando.");
+    } else {
+        vpn_log("[2/5] Placa nao encontrada, criando...");
         /* Remove legacy NIC names */
-        run_vpncmd("localhost /CLIENT /CMD NicDelete VPN",                       buf, sizeof(buf));
-        run_vpncmd("localhost /CLIENT /CMD NicDelete \"VPN Client\"",            buf, sizeof(buf));
-        run_vpncmd("localhost /CLIENT /CMD NicDelete \"VPN RLS Automacao\"",     buf, sizeof(buf));
-        run_vpncmd("localhost /CLIENT /CMD NicDelete \"RLS Automacao\"",         buf, sizeof(buf));
+        run_vpncmd("localhost /CLIENT /CMD NicDelete VPN",                   buf, sizeof(buf));
+        run_vpncmd("localhost /CLIENT /CMD NicDelete \"VPN Client\"",        buf, sizeof(buf));
+        run_vpncmd("localhost /CLIENT /CMD NicDelete \"VPN RLS Automacao\"", buf, sizeof(buf));
+        run_vpncmd("localhost /CLIENT /CMD NicDelete \"RLS Automacao\"",     buf, sizeof(buf));
 
         /* Create the NIC */
         buf[0] = 0;
         run_vpncmd("localhost /CLIENT /CMD NicCreate " NIC_NAME, buf, sizeof(buf));
-        if (strstr(buf, "Cannot connect")) {
-            snprintf(out, n, "Falha ao criar adaptador de rede: %.150s", buf);
+        if (strstr(buf, "Cannot connect") || strstr(buf, "Error")) {
+            snprintf(out, n, "Falha ao criar adaptador de rede. Detalhe: %.200s", buf);
+            vpn_log(out);
             return 0;
         }
 
         /* SevpnClient may restart after NicCreate - wait again */
-        Sleep(2000);
-        if (!wait_for_service(30)) {
+        vpn_log("[2/5] Placa criada, aguardando servico retomar...");
+        Sleep(1500);
+        if (!wait_for_service(20)) {
             snprintf(out, n, "Servico VPN nao retomou apos criar adaptador.");
+            vpn_log(out);
             return 0;
         }
-
         run_vpncmd("localhost /CLIENT /CMD NicEnable " NIC_NAME, buf, sizeof(buf));
+        vpn_log("[2/5] Placa de rede virtual criada e habilitada.");
     }
 
     /* Create or update VPN account */
+    vpn_log("[3/5] Criando/atualizando conta VPN...");
     char args[1024];
     snprintf(args, sizeof(args),
         "localhost /CLIENT /CMD AccountCreate %s"
@@ -195,11 +222,14 @@ int vpn_setup(const VpnConfig *cfg, char *out, int n) {
     buf[0] = 0;
     run_vpncmd(args, buf, sizeof(buf));
     if (strstr(buf, "Cannot connect to VPN Client")) {
-        snprintf(out, n, "Servico VPN nao responde ao criar conta.");
+        snprintf(out, n, "Servico VPN nao responde ao criar conta. Detalhe: %.150s", buf);
+        vpn_log(out);
         return 0;
     }
+    vpn_log("[3/5] Conta VPN registada.");
 
     /* Set password */
+    vpn_log("[4/5] Definindo autenticacao...");
     snprintf(args, sizeof(args),
         "localhost /CLIENT /CMD AccountPasswordSet %s /PASSWORD:%s /TYPE:standard",
         cfg->account_name, cfg->password);
@@ -207,9 +237,12 @@ int vpn_setup(const VpnConfig *cfg, char *out, int n) {
     run_vpncmd(args, buf, sizeof(buf));
     if (strstr(buf, "Cannot connect to VPN Client")) {
         snprintf(out, n, "Servico VPN nao responde ao definir password.");
+        vpn_log(out);
         return 0;
     }
+    vpn_log("[4/5] Autenticacao configurada.");
 
+    vpn_log("[5/5] Configuracao concluida com sucesso.");
     snprintf(out, n, "Placa de rede e conta VPN configuradas com sucesso.");
     return 1;
 }
@@ -217,30 +250,50 @@ int vpn_setup(const VpnConfig *cfg, char *out, int n) {
 int vpn_connect(const VpnConfig *cfg, char *out, int n) {
     char buf[4096];
 
+    vpn_log("Iniciando servico SoftEther...");
     sc_cmd("start SevpnClient");
     if (!wait_for_service(15)) {
-        snprintf(out, n, "Servico VPN nao responde. Aguarda e tenta de novo.");
+        snprintf(out, n, "Servico VPN nao responde em 15s. Verifique se o SoftEther esta instalado.");
+        vpn_log(out);
         return 0;
     }
 
     char args[256];
     snprintf(args, sizeof(args),
         "localhost /CLIENT /CMD AccountConnect %s", cfg->account_name);
+    vpn_log("Conectando conta VPN...");
     buf[0] = 0;
     run_vpncmd(args, buf, sizeof(buf));
 
     if (strstr(buf, "The command completed successfully")) {
-        snprintf(out, n, "Ligacao iniciada com sucesso.");
+        vpn_log("Comando de conexao enviado com sucesso.");
+        snprintf(out, n, "Ligacao iniciada. Aguardando atribuicao de IP...");
         return 1;
     } else if (strstr(buf, "already") || strstr(buf, "Already")) {
         snprintf(out, n, "Ja esta ligado a rede RLS Automacao.");
+        vpn_log(out);
         return 1;
     } else if (strstr(buf, "Cannot connect to VPN Client")) {
-        snprintf(out, n, "Servico VPN nao responde. Aguarda e tenta novamente.");
+        snprintf(out, n, "Servico VPN nao responde. Detalhe: %.180s", buf);
+        vpn_log(out);
+        return 0;
+    } else if (strstr(buf, "The specified account is not found") ||
+               strstr(buf, "not found")) {
+        snprintf(out, n, "Conta VPN nao encontrada. Use 'Configurar' primeiro.");
+        vpn_log(out);
+        return 0;
+    } else if (buf[0] != '\0') {
+        /* Return real vpncmd error to UI */
+        /* Trim to last 220 chars to keep it readable */
+        int blen = (int)strlen(buf);
+        int start = blen > 220 ? blen - 220 : 0;
+        snprintf(out, n, "Erro ao ligar: %.220s", buf + start);
+        vpn_log(out);
         return 0;
     }
 
-    snprintf(out, n, "Falha ao ligar: %.200s", buf);
+    snprintf(out, n, "Falha ao ligar: resposta vazia do vpncmd.");
+    vpn_log(out);
     return 0;
 }
 
@@ -254,7 +307,7 @@ int vpn_disconnect(const VpnConfig *cfg, char *out, int n) {
     return 1;
 }
 
-/* Get VPN adapter IP via PowerShell */
+/* ─── Get VPN adapter IP via PowerShell ─────────────── */
 static void get_vpn_ip(char *ip_out, int ip_len) {
     char script[2048];
     snprintf(script, sizeof(script),
@@ -289,6 +342,15 @@ static void get_vpn_ip(char *ip_out, int ip_len) {
 
     if (*p && strlen(p) <= 15 && !strstr(p, "169.254"))
         strncpy(ip_out, p, ip_len - 1);
+}
+
+/* ─── Public wrapper for VPN adapter IP ───────────────── */
+void vpn_get_nic_ip(char *ip_out, int ip_len) {
+    if (!ip_out || ip_len < 1) return;
+    ip_out[0] = '\0';
+    get_vpn_ip(ip_out, ip_len);
+    if (ip_out[0] == '\0')
+        strncpy(ip_out, "Placa sem IP", ip_len - 1);
 }
 
 void vpn_get_status(const VpnConfig *cfg, VpnStatus *s) {
@@ -354,12 +416,18 @@ void vpn_get_status(const VpnConfig *cfg, VpnStatus *s) {
     if (s->connected) {
         s->state = VPN_CONNECTED;
         strncpy(s->message, "Ligado a rede RLS Automacao", sizeof(s->message) - 1);
+        /* Show "Placa sem IP" in local_ip field when session is up but IP not assigned yet */
+        if (!has_ip)
+            strncpy(s->local_ip, "Placa sem IP", sizeof(s->local_ip) - 1);
     } else if (strstr(lower, "connecting")) {
         s->state = VPN_CONNECTING;
         strncpy(s->message, "A estabelecer ligacao...", sizeof(s->message) - 1);
+        if (!has_ip)
+            strncpy(s->local_ip, "Placa sem IP", sizeof(s->local_ip) - 1);
     } else {
         s->state = VPN_DISCONNECTED;
         strncpy(s->message, "Pronto para ligar", sizeof(s->message) - 1);
+        s->local_ip[0] = '\0'; /* hide IP field when disconnected */
     }
 }
 
