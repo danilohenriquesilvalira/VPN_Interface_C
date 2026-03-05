@@ -25,22 +25,6 @@ jobs:
           update: true
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
 
-      - name: Download WebView2 SDK (NuGet)
-        shell: pwsh
-        run: |
-          $version = "1.0.2849.39"
-          $url = "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/$version"
-          Write-Host "Downloading WebView2 SDK v$version..."
-          Invoke-WebRequest -Uri $url -OutFile wv2.nupkg -UseBasicParsing
-          Rename-Item wv2.nupkg wv2.zip
-          Expand-Archive wv2.zip wv2sdk -Force
-          # Copy ALL headers (WebView2.h includes WebView2EnvironmentOptions.h etc.)
-          Copy-Item "wv2sdk\build\native\include\*.h" "src\" -Force
-          Copy-Item "wv2sdk\build\native\x64\WebView2Loader.dll" "." -Force
-          $headers = (Get-ChildItem "src\*.h" | Where-Object { $_.Name -like "WebView2*" }).Count
-          Write-Host "Copied $headers WebView2 header(s) to src/"
-          Write-Host "WebView2Loader.dll copied to workspace root"
-
       - name: Download SoftEther VPN Client
         shell: pwsh
         run: |
@@ -208,59 +192,23 @@ jobs:
           Set-Content -Path "src\license.rtf" -Value $rtf -Encoding ASCII
           Write-Host "license.rtf criado"
 
-      - name: Build EXE (C + C++ WebView2)
+      - name: Build EXE (Pure C Win32)
         shell: msys2 {0}
         run: |
-          # ── Create MinGW import library for WebView2Loader.dll ──────────────
-          # WebView2Loader.dll was downloaded to workspace root in the NuGet step.
-          # MinGW cannot use the MSVC .lib; dlltool generates a compatible .a file.
-          cat > WebView2Loader.def << 'EOF'
-          LIBRARY WebView2Loader.dll
-          EXPORTS
-              CreateCoreWebView2EnvironmentWithOptions
-              CreateCoreWebView2Environment
-              GetAvailableCoreWebView2BrowserVersionString
-              CompareBrowserVersions
-          EOF
-          dlltool -D WebView2Loader.dll -d WebView2Loader.def -l libWebView2Loader.a
-          echo "libWebView2Loader.a created: $(ls -lh libWebView2Loader.a)"
-
-          # Resource (embeds ui.html as RCDATA 102)
+          # Resource (icon + manifest)
           windres src/resource.rc -O coff -o src/resource.o
 
           # C sources
           gcc -Wall -O2 -Isrc -mwindows -c -o src/main.o src/main.c
           gcc -Wall -O2 -Isrc -mwindows -c -o src/vpn.o  src/vpn.c
 
-          # C++ bridge (needs WebView2.h, copied to src/ above)
-          g++ -Wall -O2 -Isrc -mwindows -std=c++17 -c -o src/webview_bridge.o src/webview_bridge.cpp
-
-          # Link with g++ to handle C++ symbols
-          # -L.             : find libWebView2Loader.a in workspace root
-          # -lWebView2Loader : resolves CreateCoreWebView2EnvironmentWithOptions
-          # -luuid           : resolves IID_IUnknown and other COM GUIDs (MinGW)
-          g++ -mwindows \
+          # Link — pure C, no C++ symbols, no WebView2
+          gcc -mwindows \
             -o rls_vpn.exe \
-            src/main.o src/vpn.o src/webview_bridge.o src/resource.o \
-            -L. -lWebView2Loader \
-            -lcomctl32 -lgdi32 -lshcore -lole32 -luuid -lgdiplus -lstdc++ -lshell32
+            src/main.o src/vpn.o src/resource.o \
+            -lcomctl32 -lgdi32 -lshcore -lole32 -luuid -lgdiplus -lshell32
 
           ls -lh rls_vpn.exe
-
-          # ── Copy MinGW runtime DLLs to workspace root ──────────────────────
-          # These DLLs must ship alongside rls_vpn.exe on the target machine.
-          # ldd finds exactly which ones are needed from the MSYS2 environment.
-          MINGW_BIN=/mingw64/bin
-          for dll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
-            if [ -f "$MINGW_BIN/$dll" ]; then
-              cp "$MINGW_BIN/$dll" .
-              echo "Copied: $dll"
-            else
-              echo "WARNING: $dll not found in $MINGW_BIN"
-            fi
-          done
-          echo "Runtime DLLs in workspace:"
-          ls -lh lib*.dll 2>/dev/null || true
 
       - name: Build MSI (WiX com UI e logo RLS)
         shell: pwsh
@@ -292,10 +240,6 @@ jobs:
           path: |
             rls_vpn.exe
             rls_vpn.msi
-            WebView2Loader.dll
-            libgcc_s_seh-1.dll
-            libstdc++-6.dll
-            libwinpthread-1.dll
           if-no-files-found: error
 
       - name: Create Release
@@ -306,22 +250,20 @@ jobs:
           body: |
             ## RLS Automacao VPN ${{ github.ref_name }}
 
-            ### O que ha de novo nesta versao
-            - **Interface WebView2**: dashboard HTML/CSS/JS completamente moderno com tema escuro
-            - Janela redimensionavel — pode maximizar o ecra completo
-            - Animacoes fluidas, transicoes CSS, hover states
-            - Painel de configuracoes deslizante (drawer lateral)
-            - Consola de registos colorida com auto-scroll
-            - Cards de informacao (servidor, utilizador, conta, IP)
-            - Progresso em tempo real com percentagem e descricao de passo
-            - Toasts discretos para feedback de resultado
-            - Instalacao in-app do SoftEther (op 5)
-            - Instalador MSI com identidade visual RLS
+            ### Novidades v1.4.0
+            - **UI nativa Win32 GDI** — sem WebView2, sem dependencias externas, inicio instantaneo
+            - Tema escuro total com cores de estado (verde/amarelo/vermelho)
+            - Header com logo RLS, titulo e subtitulo
+            - Barra de progresso integrada durante operacoes VPN
+            - Painel de configuracao embutido (servidor, porta, hub, utilizador, password)
+            - Log de consola com fonte Consolas e scroll automatico
+            - Aplicar IP estatico diretamente na interface
+            - Zero DLLs de runtime necessarias — EXE standalone
 
             ### Como instalar
             1. Baixe **`rls_vpn.msi`** (recomendado)
             2. Execute o MSI como **Administrador**
-            3. O SoftEther VPN Client e instalado automaticamente durante o MSI
+            3. O SoftEther VPN Client e instalado automaticamente
             4. Abra o atalho **RLS Automacao VPN** no Ambiente de Trabalho
 
             > **Alternativa:** Se ja tiver o SoftEther instalado, pode usar apenas `rls_vpn.exe`
@@ -332,10 +274,6 @@ jobs:
           files: |
             rls_vpn.exe
             rls_vpn.msi
-            WebView2Loader.dll
-            libgcc_s_seh-1.dll
-            libstdc++-6.dll
-            libwinpthread-1.dll
           draft: false
           prerelease: false
         env:

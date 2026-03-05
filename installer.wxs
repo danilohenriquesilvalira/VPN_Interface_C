@@ -87,21 +87,7 @@
         <File Id="SEInstallerFile" Source="se_client.exe" KeyPath="yes" />
       </Component>
 
-      <!-- WebView2Loader.dll (WebView2 bootstrap DLL) -->
-      <Component Id="WebView2LoaderComp" Guid="{1A3F7D9E-5C2B-4E8A-B6D4-2E9C5F1A7B3D}">
-        <File Id="WebView2LoaderFile" Source="WebView2Loader.dll" KeyPath="yes" />
-      </Component>
-
-      <!-- MinGW runtime DLLs (necessarias para rls_vpn.exe compilado com MinGW) -->
-      <Component Id="LibGccComp" Guid="{A2B4C6D8-E0F2-4A6C-8E0A-2C4E6F8A0B2D}">
-        <File Id="LibGccFile" Source="libgcc_s_seh-1.dll" KeyPath="yes" />
-      </Component>
-      <Component Id="LibStdCppComp" Guid="{B3C5D7E9-F1A3-5B7D-9F1B-3D5F7A9C1E3F}">
-        <File Id="LibStdCppFile" Source="libstdc++-6.dll" KeyPath="yes" />
-      </Component>
-      <Component Id="LibWinPthreadComp" Guid="{C4D6E8F0-A2B4-6C8E-0A2C-4E6F8A0B2D4E}">
-        <File Id="LibWinPthreadFile" Source="libwinpthread-1.dll" KeyPath="yes" />
-      </Component>
+      <!-- Sem DLLs externas: EXE linkado 100% em C puro (sem C++/WebView2) -->
 
       <!-- Atalho no Ambiente de Trabalho -->
       <Component Id="DesktopShortcutComp" Guid="{2D8A4F7C-1E5B-3A9D-F6C2-4B8E1D7A5F9C}">
