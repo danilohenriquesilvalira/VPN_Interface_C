@@ -29,7 +29,7 @@ static VpnConfig   g_config;         /* persisted across reconfig */
 /* ── HTML resource loader ────────────────────────────────────────── */
 static void load_ui_html(void)
 {
-    HRSRC   hRes = FindResourceW(NULL, MAKEINTRESOURCEW(102), RT_RCDATA);
+    HRSRC   hRes = FindResourceW(NULL, MAKEINTRESOURCEW(102), (LPCWSTR)RT_RCDATA);
     if (!hRes) return;
     HGLOBAL hMem = LoadResource(NULL, hRes);
     if (!hMem) return;
@@ -222,29 +222,29 @@ static DWORD WINAPI WorkerThread(LPVOID param)
 
     switch (td->op) {
         case 1: {
-            int r = vpn_setup(&td->cfg);
+            int r = vpn_setup(&td->cfg, msg, sizeof msg);
             ok = (r == 0);
-            strncpy(msg, ok ? "NIC e conta VPN configurados com sucesso."
+            if (!msg[0]) strncpy(msg, ok ? "NIC e conta VPN configurados com sucesso."
                              : "Falha ao configurar a NIC/conta VPN.", sizeof msg - 1);
             break;
         }
         case 2: {
-            int r = vpn_connect(&td->cfg);
+            int r = vpn_connect(&td->cfg, msg, sizeof msg);
             ok = (r == 0);
-            strncpy(msg, ok ? "Ligacao estabelecida."
+            if (!msg[0]) strncpy(msg, ok ? "Ligacao estabelecida."
                              : "Falha ao ligar a VPN.", sizeof msg - 1);
             break;
         }
         case 3: {
-            vpn_disconnect();
+            vpn_disconnect(&td->cfg, msg, sizeof msg);
             ok = 1;
-            strncpy(msg, "VPN desligada.", sizeof msg - 1);
+            if (!msg[0]) strncpy(msg, "VPN desligada.", sizeof msg - 1);
             break;
         }
         case 4: {
-            vpn_reset();
+            vpn_reset(&td->cfg, msg, sizeof msg);
             ok = 1;
-            strncpy(msg, "Configuracao reposta.", sizeof msg - 1);
+            if (!msg[0]) strncpy(msg, "Configuracao reposta.", sizeof msg - 1);
             break;
         }
         case 5: {
@@ -255,14 +255,14 @@ static DWORD WINAPI WorkerThread(LPVOID param)
                 break;
             }
             vpn_start_service();
-            r = vpn_setup(&td->cfg);
+            r = vpn_setup(&td->cfg, msg, sizeof msg);
             ok = (r == 0);
-            strncpy(msg, ok ? "SoftEther instalado e configurado."
+            if (!msg[0]) strncpy(msg, ok ? "SoftEther instalado e configurado."
                              : "Instalacao OK mas a configuracao falhou.", sizeof msg - 1);
             break;
         }
         case 6: {
-            int r = vpn_set_static_ip(NIC_NAME, td->ip, td->mask);
+            int r = vpn_set_static_ip(td->ip, td->mask, msg, sizeof msg);
             ok = (r == 0);
             strncpy(msg, ok ? "IP estatico aplicado."
                              : "Falha ao aplicar IP estatico.", sizeof msg - 1);
@@ -285,7 +285,7 @@ static void StartOp(int op, const char *ip, const char *mask)
 
     /* Immediately acknowledge as busy */
     VpnStatus st = {0};
-    vpn_get_status(&st);
+    vpn_get_status(&g_config, &st);
     send_status_json(&st);
 
     ThreadData *td = (ThreadData *)calloc(1, sizeof(ThreadData));
@@ -404,7 +404,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_VPN_STATUS: {
         VpnStatus st = {0};
-        vpn_get_status(&st);
+        vpn_get_status(&g_config, &st);
         send_status_json(&st);
         return 0;
     }
@@ -432,7 +432,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nCmdShow)
     wc.style         = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
-    wc.hCursor       = LoadCursorW(NULL, IDC_ARROW);
+    wc.hCursor       = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     wc.lpszClassName = L"RLS_VPN_WV2";
     wc.hIcon         = LoadIconW(hInst, MAKEINTRESOURCEW(1));
