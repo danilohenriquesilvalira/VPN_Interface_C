@@ -25,7 +25,7 @@ VIAddVersionKey   "LegalCopyright"   "Copyright 2026 RLS Automacao"
 !define MUI_ICON                     "src\icon.ico"
 !define MUI_UNICON                   "src\icon.ico"
 !define MUI_HEADERIMAGE
-!define MUI_HEADERIMAGE_BITMAP       "src\icon.ico"
+!define MUI_HEADERIMAGE_BITMAP       "src\banner.bmp"
 !define MUI_HEADERIMAGE_RIGHT
 
 ;--- Texts ---

@@ -458,6 +458,115 @@ static void UpdateUI(const VpnStatus *st)
 }
 
 /* ======================================================================
+   Dialogo de senha para o botao Reset
+   ====================================================================== */
+#define IDC_PWD_EDIT  700
+#define IDC_PWD_OK    701
+#define IDC_PWD_CANCEL 702
+static BOOL g_pwd_ok = FALSE;
+
+static LRESULT CALLBACK PwdWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
+{
+    (void)lp;
+    switch (msg) {
+    case WM_CREATE: {
+        HINSTANCE hI = GetModuleHandleA(NULL);
+        HFONT f = g_font_ui;
+        /* Mensagem */
+        HWND lbl = CreateWindowA("STATIC",
+            "Introduza a senha de administrador para continuar:",
+            WS_CHILD|WS_VISIBLE|SS_LEFT,
+            14, 14, 310, 32, hw, NULL, hI, NULL);
+        SendMessageA(lbl, WM_SETFONT, (WPARAM)f, 0);
+        /* Campo senha */
+        HWND ed = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+            WS_CHILD|WS_VISIBLE|WS_TABSTOP|ES_PASSWORD|ES_AUTOHSCROLL,
+            14, 52, 310, 26, hw, (HMENU)(UINT_PTR)IDC_PWD_EDIT, hI, NULL);
+        SendMessageA(ed, WM_SETFONT, (WPARAM)f, 0);
+        SetFocus(ed);
+        /* Botoes */
+        HWND ok = CreateWindowA("BUTTON", "OK",
+            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
+            100, 94, 100, 28, hw, (HMENU)(UINT_PTR)IDC_PWD_OK, hI, NULL);
+        SendMessageA(ok, WM_SETFONT, (WPARAM)f, 0);
+        HWND cn = CreateWindowA("BUTTON", "Cancelar",
+            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_PUSHBUTTON,
+            210, 94, 100, 28, hw, (HMENU)(UINT_PTR)IDC_PWD_CANCEL, hI, NULL);
+        SendMessageA(cn, WM_SETFONT, (WPARAM)f, 0);
+        return 0;
+    }
+    case WM_COMMAND: {
+        int id = LOWORD(wp);
+        if (id == IDC_PWD_OK || (LOWORD(wp)==1 && HIWORD(wp)==BN_CLICKED)) {
+            char buf[64] = {0};
+            GetDlgItemTextA(hw, IDC_PWD_EDIT, buf, sizeof buf);
+            if (strcmp(buf, "Rls@2024") == 0) {
+                g_pwd_ok = TRUE;
+                DestroyWindow(hw);
+            } else {
+                SetDlgItemTextA(hw, IDC_PWD_EDIT, "");
+                MessageBoxA(hw, "Senha incorreta.", "Acesso negado", MB_ICONWARNING|MB_OK);
+                SetFocus(GetDlgItem(hw, IDC_PWD_EDIT));
+            }
+        } else if (id == IDC_PWD_CANCEL) {
+            g_pwd_ok = FALSE;
+            DestroyWindow(hw);
+        }
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (wp == VK_ESCAPE) { g_pwd_ok = FALSE; DestroyWindow(hw); return 0; }
+        break;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcA(hw, msg, wp, lp);
+}
+
+/* Mostra dialogo de senha de forma modal. Devolve TRUE se senha correcta. */
+static BOOL AskResetPassword(HWND parent)
+{
+    static BOOL cls_reg = FALSE;
+    HINSTANCE hI = GetModuleHandleA(NULL);
+    if (!cls_reg) {
+        WNDCLASSA wc = {0};
+        wc.lpfnWndProc   = PwdWndProc;
+        wc.hInstance     = hI;
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
+        wc.lpszClassName = "RlsPwdDlg";
+        wc.hCursor       = LoadCursorA(NULL, IDC_ARROW);
+        RegisterClassA(&wc);
+        cls_reg = TRUE;
+    }
+    g_pwd_ok = FALSE;
+    /* Centrar na janela pai */
+    RECT pr; GetWindowRect(parent, &pr);
+    int W = 340, H = 178;
+    int x = pr.left + (pr.right - pr.left - W) / 2;
+    int y = pr.top  + (pr.bottom - pr.top  - H) / 2;
+    HWND hw = CreateWindowExA(
+        WS_EX_DLGMODALFRAME|WS_EX_TOPMOST,
+        "RlsPwdDlg", "Verificacao de Seguranca",
+        WS_POPUP|WS_CAPTION|WS_SYSMENU,
+        x, y, W, H, parent, NULL, hI, NULL);
+    EnableWindow(parent, FALSE);
+    ShowWindow(hw, SW_SHOW);
+    UpdateWindow(hw);
+    /* Loop modal local */
+    MSG m;
+    while (GetMessageA(&m, NULL, 0, 0)) {
+        if (!IsDialogMessageA(hw, &m)) {
+            TranslateMessage(&m);
+            DispatchMessageA(&m);
+        }
+    }
+    EnableWindow(parent, TRUE);
+    SetForegroundWindow(parent);
+    return g_pwd_ok;
+}
+
+/* ======================================================================
    Dialogo de configuracao (janela modal manual)
    ====================================================================== */
 static HWND  g_cfg_wnd = NULL;
@@ -1148,7 +1257,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDM_CONNECT:    StartOp(2,NULL,NULL); break;
         case IDM_DISCONNECT: StartOp(3,NULL,NULL); break;
         case IDM_SETUP:      StartOp(1,NULL,NULL); break;
-        case IDM_RESET:      StartOp(4,NULL,NULL); break;
+        case IDM_RESET:
+            if (AskResetPassword(hwnd)) StartOp(4,NULL,NULL);
+            break;
         case IDM_SCAN:       ShowScanDlg(hwnd);    break;
         case IDM_SAVE_CFG:
         case IDM_APPLYIP:    ShowConfigDlg(hwnd);  break;
