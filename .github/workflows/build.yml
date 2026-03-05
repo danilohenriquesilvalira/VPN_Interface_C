@@ -93,46 +93,40 @@ jobs:
           Add-Type -AssemblyName System.Drawing
 
           # ── Banner (493x58) ─────────────────────────────────────────────────
-          # Fundo CLARO para combinar com as paginas brancas do WiX
-          # (evita o contraste escuro/branco e o texto flutuante em preto)
+          # IMPORTANTE: WiX renderiza o titulo da pagina (ex: "End-User License
+          # Agreement") como texto preto sobre este bitmap, na area ESQUERDA
+          # (aprox. x=11..390). Por isso o bitmap NAO pode ter texto ou graficos
+          # na zona esquerda -- apenas fundo branco limpo.
+          # O branding RLS fica exclusivamente na zona DIREITA (x >= 420).
           $bmp = New-Object System.Drawing.Bitmap(493, 58)
           $g = [System.Drawing.Graphics]::FromImage($bmp)
           $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
           $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
 
-          # Fundo branco / cinza muito claro (igual ao padrao WiX)
-          $g.Clear([System.Drawing.Color]::FromArgb(248, 249, 250))
+          # Fundo totalmente branco -- WiX renderiza o titulo do dialogo aqui
+          $g.Clear([System.Drawing.Color]::White)
 
-          # Barra azul na esquerda (4px) - elemento de marca
-          $accentBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(31, 111, 235))
-          $g.FillRectangle($accentBrush, 0, 0, 4, 58)
-
-          # Linha separadora fina no fundo
+          # Linha separadora fina no fundo (igual ao WiX padrao)
           $sepPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(210, 215, 220), 1)
           $g.DrawLine($sepPen, 0, 57, 493, 57)
 
-          # Circulo logo RLS (azul, centralizado verticalmente)
-          $g.FillEllipse($accentBrush, 12, 9, 38, 38)
+          # Separador vertical discreto antes do logo (x=418)
+          $divPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(210, 215, 220), 1)
+          $g.DrawLine($divPen, 418, 8, 418, 50)
+
+          # Circulo logo RLS no canto DIREITO -- longe do texto do WiX
+          $accentBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(31, 111, 235))
+          $g.FillEllipse($accentBrush, 428, 10, 36, 36)
           $sf = New-Object System.Drawing.StringFormat
           $sf.Alignment = [System.Drawing.StringAlignment]::Center
           $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
           $whiteBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
           $logoFont = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
-          $g.DrawString("R", $logoFont, $whiteBrush, (New-Object System.Drawing.RectangleF(12, 9, 38, 38)), $sf)
-
-          # Titulo em cor escura (legivel sobre fundo claro)
-          $darkBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(22, 27, 34))
-          $titleFont = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
-          $g.DrawString("RLS Automacao VPN", $titleFont, $darkBrush, 60, 9)
-
-          # Subtitulo em cinza
-          $dimBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(100, 110, 120))
-          $subFont = New-Object System.Drawing.Font("Segoe UI", 9)
-          $g.DrawString("Sistema VPN Industrial  |  v1.3.0", $subFont, $dimBrush, 62, 33)
+          $g.DrawString("R", $logoFont, $whiteBrush, (New-Object System.Drawing.RectangleF(428, 10, 36, 36)), $sf)
 
           $bmp.Save("src\banner.bmp", [System.Drawing.Imaging.ImageFormat]::Bmp)
           $g.Dispose(); $bmp.Dispose()
-          Write-Host "banner.bmp criado: 493x58 (fundo claro)"
+          Write-Host "banner.bmp criado: 493x58 (branding direita, esquerda livre para WiX)"  
 
           # ── Dialog bitmap (493x312) ─────────────────────────────────────────
           # Paginas Welcome e Finish: painel esquerdo escuro + branding centrado
@@ -242,15 +236,24 @@ jobs:
           g++ -Wall -O2 -Isrc -mwindows -std=c++17 -c -o src/webview_bridge.o src/webview_bridge.cpp
 
           # Link with g++ to handle C++ symbols
-          # -L.            : find libWebView2Loader.a in workspace root
-          # -lWebView2Loader: resolves CreateCoreWebView2EnvironmentWithOptions
-          # -luuid          : resolves IID_IUnknown and other COM GUIDs (MinGW)
-          g++ -mwindows -o rls_vpn.exe \
+          # -L.                        : find libWebView2Loader.a in workspace root
+          # -lWebView2Loader            : resolves CreateCoreWebView2EnvironmentWithOptions
+          # -luuid                      : resolves IID_IUnknown and other COM GUIDs (MinGW)
+          # -static-libgcc              : embeds libgcc_s_seh-1.dll statically (no external DLL needed)
+          # -static-libstdc++           : embeds libstdc++-6.dll statically
+          # -Wl,-Bstatic,-lwinpthread,-Bdynamic : embeds libwinpthread-1.dll statically
+          g++ -mwindows \
+            -static-libgcc -static-libstdc++ \
+            -Wl,-Bstatic,-lwinpthread,-Bdynamic \
+            -o rls_vpn.exe \
             src/main.o src/vpn.o src/webview_bridge.o src/resource.o \
             -L. -lWebView2Loader \
-            -lcomctl32 -lgdi32 -lshcore -lole32 -luuid -lgdiplus -lstdc++ -lshell32
+            -lcomctl32 -lgdi32 -lshcore -lole32 -luuid -lgdiplus -lshell32
 
           ls -lh rls_vpn.exe
+          # Verify no MinGW runtime DLL dependencies remain
+          objdump -p rls_vpn.exe | grep -i 'dll name' | grep -iE 'libgcc|libstdc|winpthread' && \
+            echo 'WARNING: runtime DLL dependency found!' || echo 'OK: no MinGW runtime DLL deps'
 
       - name: Build MSI (WiX com UI e logo RLS)
         shell: pwsh
