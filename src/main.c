@@ -36,6 +36,7 @@
 #define IDM_APPLYIP    1011
 #define IDM_TOGGLE     1012   /* single Ligar/Desligar toggle button */
 #define IDM_SCAN       1013   /* scan de rede VPN */
+#define IDM_PINGTEST   1014   /* ping ao servidor VPN */
 
 /* ---- Control IDs -------------------------------------------------------- */
 #define IDC_LIST_CONNS    200
@@ -57,6 +58,7 @@
 #define WM_SCAN_RESULT   (WM_APP+4)   /* lp = ScanResult* (heap, caller frees) */
 #define WM_SCAN_DONE     (WM_APP+5)   /* scan concluido */
 #define WM_SCAN_PROGRESS (WM_APP+6)   /* wp = 1..254 */
+#define WM_PING_RESULT   (WM_APP+7)   /* lp = char* resultado (heap, receiver frees) */
 /* ---- Layout constants --------------------------------------------------- */
 #define TB_H   48   /* toolbar height px */
 #define LOG_H  150  /* log panel height px */
@@ -106,6 +108,7 @@ typedef struct {
     DWORD latency_ms;
 } ScanResult;
 typedef struct { HWND hw; DWORD ip; int idx; } PingArg;
+typedef struct { HWND hw; char host[256]; int port; } SrvPingArg;
 
 /* ---- Forward declarations ----------------------------------------------- */
 static LRESULT CALLBACK WndProc(HWND,UINT,WPARAM,LPARAM);
@@ -120,6 +123,7 @@ static const struct { int id; const char *label; } g_tbBtns[] = {
     {IDM_SAVE_CFG, "Configurar VPN"},   /* abre dialogo de config */
     {IDM_RESET,    "Reset"},
     {IDM_SCAN,     "Scan Rede"},        /* varredura de IP na rede VPN */
+    {IDM_PINGTEST, "Teste Servidor"},   /* ping ao servidor configurado */
 };
 #define TB_BTN_CNT ((int)(sizeof g_tbBtns/sizeof g_tbBtns[0]))
 static HWND g_toolbar = NULL;
@@ -977,6 +981,9 @@ static LRESULT CALLBACK ScanWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcA(hw, msg, wp, lp);
 }
 
+static void ShowScanDlg(HWND parent);
+static void ShowPingTestDlg(HWND parent);
+
 static void ShowScanDlg(HWND parent)
 {
     if (g_scan_wnd) { SetForegroundWindow(g_scan_wnd); return; }
@@ -1063,6 +1070,197 @@ static void LayoutChildren(HWND hwnd)
 
     int parts[3] = {280, W-200, W};
     SendMessageA(g_statusbar, SB_SETPARTS, 3, (LPARAM)parts);
+}
+
+/* ======================================================================
+   Teste de Servidor — ping ao g_cfg.host
+   ====================================================================== */
+#define IDC_PING_RESULT  700
+#define IDC_PING_CLOSE   701
+
+static HWND g_ping_wnd = NULL;
+
+static DWORD WINAPI SrvPingThread(LPVOID arg)
+{
+    SrvPingArg *a = (SrvPingArg*)arg;
+    HWND hw    = a->hw;
+    char host[256]; strncpy(host, a->host, sizeof(host)-1);
+    free(a);
+
+    char msg[1024] = {0};
+
+    /* Resolve hostname -> IP */
+    struct addrinfo hints = {0}, *res = NULL;
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res) {
+        snprintf(msg, sizeof(msg),
+            "Nao foi possivel resolver o hostname:\n  \"%s\"\n\n"
+            "Verifique o endereco do servidor nas configuracoes.", host);
+        char *out = _strdup(msg);
+        PostMessageA(hw, WM_PING_RESULT, 0, (LPARAM)out);
+        return 0;
+    }
+    DWORD destIP = ((struct sockaddr_in*)res->ai_addr)->sin_addr.s_addr;
+    char ip_str[32];
+    strncpy(ip_str, inet_ntoa(((struct sockaddr_in*)res->ai_addr)->sin_addr), sizeof(ip_str)-1);
+    freeaddrinfo(res);
+
+    /* 4x IcmpSendEcho */
+    HANDLE hIcmp = IcmpCreateFile();
+    if (hIcmp == INVALID_HANDLE_VALUE) {
+        snprintf(msg, sizeof(msg), "Erro ao criar handle ICMP.");
+        char *out = _strdup(msg);
+        PostMessageA(hw, WM_PING_RESULT, 0, (LPARAM)out);
+        return 0;
+    }
+
+    char send_buf[8] = "RLSPING";
+    BYTE  recv_buf[256];
+    DWORD latency[4];
+    int   success = 0;
+    char  lines[4][64];
+
+    for (int i = 0; i < 4; i++) {
+        memset(recv_buf, 0, sizeof(recv_buf));
+        DWORD ret = IcmpSendEcho(hIcmp, destIP, send_buf, 8,
+                                 NULL, recv_buf, sizeof(recv_buf), 2000);
+        if (ret > 0) {
+            ICMP_ECHO_REPLY *r = (ICMP_ECHO_REPLY*)recv_buf;
+            latency[i] = r->RoundTripTime;
+            snprintf(lines[i], sizeof(lines[i]), "  Ping %d: %lu ms", i+1, (unsigned long)latency[i]);
+            success++;
+        } else {
+            latency[i] = 0;
+            snprintf(lines[i], sizeof(lines[i]), "  Ping %d: Timeout", i+1);
+        }
+        Sleep(200);
+    }
+    IcmpCloseHandle(hIcmp);
+
+    /* Summary */
+    char summary[128];
+    if (success > 0) {
+        DWORD sum = 0;
+        for (int i = 0; i < 4; i++) if (latency[i]) sum += latency[i];
+        snprintf(summary, sizeof(summary),
+            "Resultado: ACESSIVEL  (media: %lu ms, %d/4 OK)",
+            (unsigned long)(sum / success), success);
+    } else {
+        snprintf(summary, sizeof(summary),
+            "Resultado: INACESSIVEL - servidor nao responde");
+    }
+
+    snprintf(msg, sizeof(msg),
+        "Servidor: %s  [IP: %s]\n\n%s\n%s\n%s\n%s\n\n%s",
+        host, ip_str,
+        lines[0], lines[1], lines[2], lines[3],
+        summary);
+
+    char *out = _strdup(msg);
+    PostMessageA(hw, WM_PING_RESULT, 0, (LPARAM)out);
+    return 0;
+}
+
+static LRESULT CALLBACK PingTestWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_CREATE: {
+        HINSTANCE hI = ((CREATESTRUCTA*)lp)->hInstance;
+        HFONT f = g_font_ui;
+
+        /* "A testar..." static label */
+        HWND hl = CreateWindowExA(0, "STATIC",
+            "A testar servidor... aguarde.",
+            WS_CHILD|WS_VISIBLE|SS_LEFT,
+            16, 16, 460, 200,
+            hw, (HMENU)(UINT_PTR)IDC_PING_RESULT, hI, NULL);
+        SendMessageA(hl, WM_SETFONT, (WPARAM)f, 0);
+
+        /* Fechar button (disabled until result) */
+        HWND hb = CreateWindowA("BUTTON", "Fechar",
+            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_PUSHBUTTON,
+            170, 224, 140, 36,
+            hw, (HMENU)(UINT_PTR)IDC_PING_CLOSE, hI, NULL);
+        SendMessageA(hb, WM_SETFONT, (WPARAM)f, 0);
+        EnableWindow(hb, FALSE);
+        return 0;
+    }
+    case WM_PING_RESULT: {
+        char *result = (char*)lp;
+        if (result) {
+            SetDlgItemTextA(hw, IDC_PING_RESULT, result);
+            free(result);
+        }
+        HWND hb = GetDlgItem(hw, IDC_PING_CLOSE);
+        if (hb) EnableWindow(hb, TRUE);
+        return 0;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDC_PING_CLOSE || LOWORD(wp) == IDCANCEL) {
+            HWND parent = GetWindow(hw, GW_OWNER);
+            if (parent) EnableWindow(parent, TRUE);
+            DestroyWindow(hw);
+            g_ping_wnd = NULL;
+        }
+        return 0;
+    case WM_CLOSE:
+        SendMessageA(hw, WM_COMMAND, IDCANCEL, 0);
+        return 0;
+    case WM_DESTROY:
+        g_ping_wnd = NULL;
+        return 0;
+    }
+    return DefWindowProcA(hw, msg, wp, lp);
+}
+
+static void ShowPingTestDlg(HWND parent)
+{
+    if (g_ping_wnd) { SetForegroundWindow(g_ping_wnd); return; }
+    if (!g_cfg.host[0]) {
+        MessageBoxA(parent,
+            "Nenhum servidor configurado.\nConfigure o servidor VPN primeiro.",
+            "Teste de Servidor", MB_OK|MB_ICONWARNING);
+        return;
+    }
+
+    HINSTANCE hI = (HINSTANCE)GetWindowLongPtrA(parent, GWLP_HINSTANCE);
+
+    static BOOL reg = FALSE;
+    if (!reg) {
+        WNDCLASSA wc = {0};
+        wc.lpfnWndProc   = PingTestWndProc;
+        wc.hInstance     = hI;
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
+        wc.lpszClassName = "RLS_PING";
+        wc.hCursor       = LoadCursorA(NULL, (LPCSTR)IDC_ARROW);
+        RegisterClassA(&wc);
+        reg = TRUE;
+    }
+
+    int W=500, H=290;
+    RECT rc; GetWindowRect(parent, &rc);
+    int X = rc.left + (rc.right-rc.left-W)/2;
+    int Y = rc.top  + (rc.bottom-rc.top-H)/2;
+
+    g_ping_wnd = CreateWindowExA(WS_EX_DLGMODALFRAME,
+        "RLS_PING", "Teste de Servidor",
+        WS_POPUP|WS_CAPTION|WS_SYSMENU,
+        X, Y, W, H, parent, NULL, hI, NULL);
+
+    EnableWindow(parent, FALSE);
+    ShowWindow(g_ping_wnd, SW_SHOW);
+
+    /* Start ping thread */
+    SrvPingArg *arg = (SrvPingArg*)calloc(1, sizeof(SrvPingArg));
+    if (arg) {
+        arg->hw   = g_ping_wnd;
+        arg->port = g_cfg.port;
+        strncpy(arg->host, g_cfg.host, sizeof(arg->host)-1);
+        HANDLE ht = CreateThread(NULL, 0, SrvPingThread, arg, 0, NULL);
+        if (ht) CloseHandle(ht);
+        else { free(arg); }
+    }
 }
 
 /* ======================================================================
@@ -1162,6 +1360,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
         HMENU mView=CreatePopupMenu();
         AppendMenuA(mView,MF_STRING,IDM_SCAN,"Scan de Rede VPN...");
+        AppendMenuA(mView,MF_STRING,IDM_PINGTEST,"Teste de Servidor...");
         AppendMenuA(mb,MF_POPUP,(UINT_PTR)mView,"Ver");
 
         HMENU mAdap=CreatePopupMenu();
@@ -1170,6 +1369,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
         HMENU mTools=CreatePopupMenu();
         AppendMenuA(mTools,MF_STRING,IDM_SCAN,"Scan de Rede...");
+        AppendMenuA(mTools,MF_STRING,IDM_PINGTEST,"Teste de Servidor...");
         AppendMenuA(mb,MF_POPUP,(UINT_PTR)mTools,"Ferramentas");
 
         HMENU mHelp=CreatePopupMenu();
@@ -1263,6 +1463,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (AskResetPassword(hwnd)) StartOp(4,NULL,NULL);
             break;
         case IDM_SCAN:       ShowScanDlg(hwnd);    break;
+        case IDM_PINGTEST:   ShowPingTestDlg(hwnd); break;
         case IDM_SAVE_CFG:
         case IDM_APPLYIP:    ShowConfigDlg(hwnd);  break;
         case IDM_ABOUT:
