@@ -111,14 +111,14 @@ struct MsgHandler : ICoreWebView2WebMessageReceivedEventHandler
 /* ------------------------------------------------------------------ */
 /* COM callback: controller created                                     */
 /* ------------------------------------------------------------------ */
-struct CtrlHandler : ICreateCoreWebView2ControllerCompletedHandler
+struct CtrlHandler : ICoreWebView2CreateCoreWebView2ControllerCompletedHandler
 {
     ULONG m_ref = 1;
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
     {
         if (IsEqualIID(riid, IID_IUnknown) ||
-            IsEqualIID(riid, IID_ICreateCoreWebView2ControllerCompletedHandler)) {
+            IsEqualIID(riid, IID_ICoreWebView2CreateCoreWebView2ControllerCompletedHandler)) {
             *ppv = this; AddRef(); return S_OK;
         }
         *ppv = nullptr; return E_NOINTERFACE;
@@ -170,14 +170,14 @@ struct CtrlHandler : ICreateCoreWebView2ControllerCompletedHandler
 /* ------------------------------------------------------------------ */
 /* COM callback: environment created                                    */
 /* ------------------------------------------------------------------ */
-struct EnvHandler : ICreateCoreWebView2EnvironmentCompletedHandler
+struct EnvHandler : ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler
 {
     ULONG m_ref = 1;
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
     {
         if (IsEqualIID(riid, IID_IUnknown) ||
-            IsEqualIID(riid, IID_ICreateCoreWebView2EnvironmentCompletedHandler)) {
+            IsEqualIID(riid, IID_ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler)) {
             *ppv = this; AddRef(); return S_OK;
         }
         *ppv = nullptr; return E_NOINTERFACE;
