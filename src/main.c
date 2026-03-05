@@ -1089,22 +1089,31 @@ static DWORD WINAPI SrvPingThread(LPVOID arg)
 
     char msg[1024] = {0};
 
-    /* Resolve hostname -> IP */
-    struct addrinfo hints = {0}, *res = NULL;
-    hints.ai_family   = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res) {
-        snprintf(msg, sizeof(msg),
-            "Nao foi possivel resolver o hostname:\n  \"%s\"\n\n"
-            "Verifique o endereco do servidor nas configuracoes.", host);
-        char *out = _strdup(msg);
-        PostMessageA(hw, WM_PING_RESULT, 0, (LPARAM)out);
-        return 0;
+    /* Resolve: tenta inet_addr primeiro (IP direto), depois DNS */
+    DWORD destIP = INADDR_NONE;
+    char ip_str[32] = {0};
+
+    destIP = inet_addr(host);
+    if (destIP != INADDR_NONE) {
+        /* host ja e um IP puro ex: "10.201.114.222" */
+        strncpy(ip_str, host, sizeof(ip_str)-1);
+    } else {
+        /* hostname — resolve via DNS */
+        struct addrinfo hints = {0}, *res = NULL;
+        hints.ai_family   = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res) {
+            snprintf(msg, sizeof(msg),
+                "Nao foi possivel resolver o hostname:\n  \"%s\"\n\n"
+                "Verifique o endereco do servidor nas configuracoes.", host);
+            char *out = _strdup(msg);
+            PostMessageA(hw, WM_PING_RESULT, 0, (LPARAM)out);
+            return 0;
+        }
+        destIP = ((struct sockaddr_in*)res->ai_addr)->sin_addr.s_addr;
+        strncpy(ip_str, inet_ntoa(((struct sockaddr_in*)res->ai_addr)->sin_addr), sizeof(ip_str)-1);
+        freeaddrinfo(res);
     }
-    DWORD destIP = ((struct sockaddr_in*)res->ai_addr)->sin_addr.s_addr;
-    char ip_str[32];
-    strncpy(ip_str, inet_ntoa(((struct sockaddr_in*)res->ai_addr)->sin_addr), sizeof(ip_str)-1);
-    freeaddrinfo(res);
 
     /* 4x IcmpSendEcho */
     HANDLE hIcmp = IcmpCreateFile();
