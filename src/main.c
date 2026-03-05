@@ -673,8 +673,10 @@ static void ShowConfigDlg(HWND parent)
     HWND sep = CreateWindowA("STATIC","",WS_CHILD|WS_VISIBLE|SS_ETCHEDHORZ,
         10,200,580,2, g_cfg_wnd,NULL,hI,NULL); (void)sep;
 
-    /* --- IP Estatico ------------------------------------------------- */
-    LBL("IP Estatico:", 10, 212, 110, 26); EDT(IDC_CFG_IPST,"192.168.10.1",  125,210, 160, 30, 0);
+    /* --- IP Estatico: preenche com IP actual da placa VPN ------------ */
+    const char *cur_ip   = (g_vpn_ip[0] && strcmp(g_vpn_ip,"Placa sem IP")!=0)
+                           ? g_vpn_ip : "";
+    LBL("IP Estatico:", 10, 212, 110, 26); EDT(IDC_CFG_IPST, cur_ip,         125,210, 160, 30, 0);
     LBL("Mascara:",    294, 212,  80, 26); EDT(IDC_CFG_MASK,"255.255.255.0", 378,210, 180, 30, 0);
     BTN("Aplicar IP Estatico", IDM_APPLYIP, 10, 254, 200, 36);
 
