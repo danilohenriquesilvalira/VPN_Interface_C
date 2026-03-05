@@ -109,6 +109,13 @@ typedef struct {
 } ScanResult;
 typedef struct { HWND hw; DWORD ip; int idx; } PingArg;
 typedef struct { HWND hw; char host[256]; int port; } SrvPingArg;
+typedef struct {
+    int   success;        /* 0..4 pings ok */
+    DWORD latency[4];     /* ms por ping, 0 = timeout */
+    char  host[256];
+    char  ip_str[32];
+    char  error[256];     /* preenchido se erro antes dos pings */
+} SrvPingResult;
 
 /* ---- Forward declarations ----------------------------------------------- */
 static LRESULT CALLBACK WndProc(HWND,UINT,WPARAM,LPARAM);
@@ -1075,8 +1082,19 @@ static void LayoutChildren(HWND hwnd)
 /* ======================================================================
    Teste de Servidor — ping ao g_cfg.host
    ====================================================================== */
-#define IDC_PING_RESULT  700
-#define IDC_PING_CLOSE   701
+#define IDC_PING_BANNER  700   /* banner verde/vermelho */
+#define IDC_PING_HOST    701   /* servidor: X [IP: Y] */
+#define IDC_PING_L1      702   /* ping linha 1 */
+#define IDC_PING_L2      703
+#define IDC_PING_L3      704
+#define IDC_PING_L4      705
+#define IDC_PING_SUMMARY 706   /* media + stats */
+#define IDC_PING_CLOSE   707
+/* ping window state (GWLP_USERDATA) */
+#define PING_ST_LOADING  0
+#define PING_ST_OK       1
+#define PING_ST_FAIL     2
+#define PING_ST_ERROR    3
 
 static HWND g_ping_wnd = NULL;
 
@@ -1087,123 +1105,233 @@ static DWORD WINAPI SrvPingThread(LPVOID arg)
     char host[256]; strncpy(host, a->host, sizeof(host)-1);
     free(a);
 
-    char msg[1024] = {0};
+    SrvPingResult *r = (SrvPingResult*)calloc(1, sizeof(SrvPingResult));
+    if (!r) return 0;
+    strncpy(r->host, host, sizeof(r->host)-1);
 
     /* Resolve: tenta inet_addr primeiro (IP direto), depois DNS */
-    DWORD destIP = INADDR_NONE;
-    char ip_str[32] = {0};
-
-    destIP = inet_addr(host);
+    DWORD destIP = inet_addr(host);
     if (destIP != INADDR_NONE) {
-        /* host ja e um IP puro ex: "10.201.114.222" */
-        strncpy(ip_str, host, sizeof(ip_str)-1);
+        strncpy(r->ip_str, host, sizeof(r->ip_str)-1);
     } else {
-        /* hostname — resolve via DNS */
         struct addrinfo hints = {0}, *res = NULL;
         hints.ai_family   = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
         if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res) {
-            snprintf(msg, sizeof(msg),
-                "Nao foi possivel resolver o hostname:\n  \"%s\"\n\n"
-                "Verifique o endereco do servidor nas configuracoes.", host);
-            char *out = _strdup(msg);
-            PostMessageA(hw, WM_PING_RESULT, 0, (LPARAM)out);
+            snprintf(r->error, sizeof(r->error),
+                "Nao foi possivel resolver o endereco:\n\"%s\"\n\nVerifique o servidor nas configuracoes.",
+                host);
+            PostMessageA(hw, WM_PING_RESULT, 0, (LPARAM)r);
             return 0;
         }
         destIP = ((struct sockaddr_in*)res->ai_addr)->sin_addr.s_addr;
-        strncpy(ip_str, inet_ntoa(((struct sockaddr_in*)res->ai_addr)->sin_addr), sizeof(ip_str)-1);
+        strncpy(r->ip_str, inet_ntoa(((struct sockaddr_in*)res->ai_addr)->sin_addr), sizeof(r->ip_str)-1);
         freeaddrinfo(res);
     }
 
-    /* 4x IcmpSendEcho */
     HANDLE hIcmp = IcmpCreateFile();
     if (hIcmp == INVALID_HANDLE_VALUE) {
-        snprintf(msg, sizeof(msg), "Erro ao criar handle ICMP.");
-        char *out = _strdup(msg);
-        PostMessageA(hw, WM_PING_RESULT, 0, (LPARAM)out);
+        snprintf(r->error, sizeof(r->error), "Erro ao criar handle ICMP.");
+        PostMessageA(hw, WM_PING_RESULT, 0, (LPARAM)r);
         return 0;
     }
 
     char send_buf[8] = "RLSPING";
-    BYTE  recv_buf[256];
-    DWORD latency[4];
-    int   success = 0;
-    char  lines[4][64];
-
+    BYTE recv_buf[256];
     for (int i = 0; i < 4; i++) {
         memset(recv_buf, 0, sizeof(recv_buf));
         DWORD ret = IcmpSendEcho(hIcmp, destIP, send_buf, 8,
                                  NULL, recv_buf, sizeof(recv_buf), 2000);
         if (ret > 0) {
-            ICMP_ECHO_REPLY *r = (ICMP_ECHO_REPLY*)recv_buf;
-            latency[i] = r->RoundTripTime;
-            snprintf(lines[i], sizeof(lines[i]), "  Ping %d: %lu ms", i+1, (unsigned long)latency[i]);
-            success++;
+            ICMP_ECHO_REPLY *rep = (ICMP_ECHO_REPLY*)recv_buf;
+            r->latency[i] = rep->RoundTripTime;
+            r->success++;
         } else {
-            latency[i] = 0;
-            snprintf(lines[i], sizeof(lines[i]), "  Ping %d: Timeout", i+1);
+            r->latency[i] = 0;  /* 0 = timeout */
         }
         Sleep(200);
     }
     IcmpCloseHandle(hIcmp);
 
-    /* Summary */
-    char summary[128];
-    if (success > 0) {
-        DWORD sum = 0;
-        for (int i = 0; i < 4; i++) if (latency[i]) sum += latency[i];
-        snprintf(summary, sizeof(summary),
-            "Resultado: ACESSIVEL  (media: %lu ms, %d/4 OK)",
-            (unsigned long)(sum / success), success);
-    } else {
-        snprintf(summary, sizeof(summary),
-            "Resultado: INACESSIVEL - servidor nao responde");
-    }
-
-    snprintf(msg, sizeof(msg),
-        "Servidor: %s  [IP: %s]\n\n%s\n%s\n%s\n%s\n\n%s",
-        host, ip_str,
-        lines[0], lines[1], lines[2], lines[3],
-        summary);
-
-    char *out = _strdup(msg);
-    PostMessageA(hw, WM_PING_RESULT, 0, (LPARAM)out);
+    PostMessageA(hw, WM_PING_RESULT, 0, (LPARAM)r);
     return 0;
+}
+
+static HBRUSH s_br_green  = NULL;   /* banner ACESSIVEL */
+static HBRUSH s_br_red    = NULL;   /* banner INACESSIVEL */
+static HBRUSH s_br_lgreen = NULL;   /* fundo claro linhas OK */
+static HBRUSH s_br_lred   = NULL;   /* fundo claro linhas Timeout */
+static HBRUSH s_br_face   = NULL;   /* COLOR_BTNFACE */
+
+static void PingEnsureBrushes(void) {
+    if (!s_br_green)  s_br_green  = CreateSolidBrush(RGB(39,174,96));
+    if (!s_br_red)    s_br_red    = CreateSolidBrush(RGB(192,57,43));
+    if (!s_br_lgreen) s_br_lgreen = CreateSolidBrush(RGB(232,245,233));
+    if (!s_br_lred)   s_br_lred   = CreateSolidBrush(RGB(253,232,230));
+    if (!s_br_face)   s_br_face   = GetSysColorBrush(COLOR_BTNFACE);
 }
 
 static LRESULT CALLBACK PingTestWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_CREATE: {
+        PingEnsureBrushes();
         HINSTANCE hI = ((CREATESTRUCTA*)lp)->hInstance;
-        HFONT f = g_font_ui;
+        HFONT f  = g_font_ui;
+        HFONT fb = MakeFont(20, TRUE, FALSE);  /* bold para banner */
 
-        /* "A testar..." static label */
-        HWND hl = CreateWindowExA(0, "STATIC",
-            "A testar servidor... aguarde.",
+        /* Banner — fundo colorido com texto estado */
+        HWND hbn = CreateWindowExA(0, "STATIC", "  A testar servidor...",
+            WS_CHILD|WS_VISIBLE|SS_LEFT|SS_CENTERIMAGE,
+            0, 0, 484, 56,
+            hw, (HMENU)(UINT_PTR)IDC_PING_BANNER, hI, NULL);
+        SendMessageA(hbn, WM_SETFONT, (WPARAM)fb, 0);
+
+        /* Servidor info */
+        HWND hho = CreateWindowExA(0, "STATIC", "Aguardando...",
             WS_CHILD|WS_VISIBLE|SS_LEFT,
-            16, 16, 460, 200,
-            hw, (HMENU)(UINT_PTR)IDC_PING_RESULT, hI, NULL);
-        SendMessageA(hl, WM_SETFONT, (WPARAM)f, 0);
+            16, 66, 450, 22,
+            hw, (HMENU)(UINT_PTR)IDC_PING_HOST, hI, NULL);
+        SendMessageA(hho, WM_SETFONT, (WPARAM)f, 0);
 
-        /* Fechar button (disabled until result) */
-        HWND hb = CreateWindowA("BUTTON", "Fechar",
+        /* 4 linhas de ping */
+        int ids[] = {IDC_PING_L1, IDC_PING_L2, IDC_PING_L3, IDC_PING_L4};
+        for (int i = 0; i < 4; i++) {
+            char tmp[32]; snprintf(tmp, sizeof(tmp), "  Ping %d: ---", i+1);
+            HWND hl = CreateWindowExA(WS_EX_CLIENTEDGE, "STATIC", tmp,
+                WS_CHILD|WS_VISIBLE|SS_LEFT|SS_CENTERIMAGE,
+                16, 98 + i*32, 210, 26,
+                hw, (HMENU)(UINT_PTR)ids[i], hI, NULL);
+            SendMessageA(hl, WM_SETFONT, (WPARAM)f, 0);
+        }
+
+        /* Summary */
+        HWND hsu = CreateWindowExA(0, "STATIC", "",
+            WS_CHILD|WS_VISIBLE|SS_LEFT,
+            240, 98, 226, 128,
+            hw, (HMENU)(UINT_PTR)IDC_PING_SUMMARY, hI, NULL);
+        SendMessageA(hsu, WM_SETFONT, (WPARAM)f, 0);
+
+        /* Fechar (desabilitado ate resultado) */
+        HWND hcl = CreateWindowA("BUTTON", "Fechar",
             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_PUSHBUTTON,
-            170, 224, 140, 36,
+            172, 272, 140, 36,
             hw, (HMENU)(UINT_PTR)IDC_PING_CLOSE, hI, NULL);
-        SendMessageA(hb, WM_SETFONT, (WPARAM)f, 0);
-        EnableWindow(hb, FALSE);
+        SendMessageA(hcl, WM_SETFONT, (WPARAM)f, 0);
+        EnableWindow(hcl, FALSE);
         return 0;
     }
     case WM_PING_RESULT: {
-        char *result = (char*)lp;
-        if (result) {
-            SetDlgItemTextA(hw, IDC_PING_RESULT, result);
-            free(result);
+        SrvPingResult *r = (SrvPingResult*)lp;
+        if (!r) break;
+
+        int state;
+        if (r->error[0]) {
+            /* erro de resolucao/ICMP */
+            SetDlgItemTextA(hw, IDC_PING_BANNER,  "  ERRO  -  Servidor Inacessivel");
+            SetDlgItemTextA(hw, IDC_PING_HOST,    r->error);
+            SetDlgItemTextA(hw, IDC_PING_SUMMARY, "");
+            state = PING_ST_ERROR;
+        } else {
+            /* atualiza host */
+            char hinfo[300];
+            if (strcmp(r->host, r->ip_str) == 0)
+                snprintf(hinfo, sizeof(hinfo), "Servidor: %s", r->host);
+            else
+                snprintf(hinfo, sizeof(hinfo), "Servidor: %s   [IP: %s]", r->host, r->ip_str);
+            SetDlgItemTextA(hw, IDC_PING_HOST, hinfo);
+
+            /* atualiza linhas de ping */
+            int lineIds[] = {IDC_PING_L1, IDC_PING_L2, IDC_PING_L3, IDC_PING_L4};
+            for (int i = 0; i < 4; i++) {
+                HWND hl = GetDlgItem(hw, lineIds[i]);
+                char tmp[48];
+                if (r->latency[i] > 0) {
+                    snprintf(tmp, sizeof(tmp), "  Ping %d:  %lu ms", i+1, (unsigned long)r->latency[i]);
+                    SetWindowLongPtrA(hl, GWLP_USERDATA, 1);  /* OK - verde */
+                } else {
+                    snprintf(tmp, sizeof(tmp), "  Ping %d:  Timeout", i+1);
+                    SetWindowLongPtrA(hl, GWLP_USERDATA, 2);  /* fail - vermelho */
+                }
+                SetWindowTextA(hl, tmp);
+                InvalidateRect(hl, NULL, TRUE);
+            }
+
+            /* summary */
+            char sumtxt[256];
+            if (r->success > 0) {
+                DWORD sum = 0;
+                for (int i = 0; i < 4; i++) sum += r->latency[i];
+                snprintf(sumtxt, sizeof(sumtxt),
+                    "Enviados:    4\nRecebidos:  %d\nPerdidos:    %d\n\nMedia: %lu ms",
+                    r->success, 4 - r->success,
+                    (unsigned long)(sum / r->success));
+            } else {
+                snprintf(sumtxt, sizeof(sumtxt),
+                    "Enviados:    4\nRecebidos:  0\nPerdidos:    4\n\nServidor nao\nresponde");
+            }
+            SetDlgItemTextA(hw, IDC_PING_SUMMARY, sumtxt);
+
+            /* banner texto + estado */
+            if (r->success == 4)
+                SetDlgItemTextA(hw, IDC_PING_BANNER, "   ACESSIVEL   -   Todos os pings OK");
+            else if (r->success > 0)
+                SetDlgItemTextA(hw, IDC_PING_BANNER, "   ACESSIVEL   -   Com perdas de pacotes");
+            else
+                SetDlgItemTextA(hw, IDC_PING_BANNER, "   INACESSIVEL   -   Servidor nao responde");
+
+            state = (r->success > 0) ? PING_ST_OK : PING_ST_FAIL;
         }
-        HWND hb = GetDlgItem(hw, IDC_PING_CLOSE);
-        if (hb) EnableWindow(hb, TRUE);
+        free(r);
+
+        SetWindowLongPtrA(hw, GWLP_USERDATA, (LONG_PTR)state);
+        InvalidateRect(hw, NULL, TRUE);
+        HWND hcl = GetDlgItem(hw, IDC_PING_CLOSE);
+        if (hcl) EnableWindow(hcl, TRUE);
         return 0;
+    }
+    case WM_CTLCOLORSTATIC: {
+        HDC hdc  = (HDC)wp;
+        HWND hct = (HWND)lp;
+        int cid  = GetDlgCtrlID(hct);
+        int wstate = (int)GetWindowLongPtrA(hw, GWLP_USERDATA);
+
+        if (cid == IDC_PING_BANNER) {
+            BOOL ok = (wstate == PING_ST_OK);
+            BOOL loading = (wstate == PING_ST_LOADING);
+            SetTextColor(hdc, loading ? RGB(80,80,80) : RGB(255,255,255));
+            SetBkMode(hdc, OPAQUE);
+            if (loading) {
+                SetBkColor(hdc, GetSysColor(COLOR_BTNFACE));
+                return (LRESULT)s_br_face;
+            }
+            SetBkColor(hdc, ok ? RGB(39,174,96) : RGB(192,57,43));
+            return (LRESULT)(ok ? s_br_green : s_br_red);
+        }
+        /* ping lines */
+        int lineState = (int)GetWindowLongPtrA(hct, GWLP_USERDATA);
+        if (cid >= IDC_PING_L1 && cid <= IDC_PING_L4) {
+            if (lineState == 1) {
+                SetTextColor(hdc, RGB(27,153,66));
+                SetBkColor(hdc, RGB(232,245,233));
+                SetBkMode(hdc, OPAQUE);
+                return (LRESULT)s_br_lgreen;
+            } else if (lineState == 2) {
+                SetTextColor(hdc, RGB(160,40,30));
+                SetBkColor(hdc, RGB(253,232,230));
+                SetBkMode(hdc, OPAQUE);
+                return (LRESULT)s_br_lred;
+            }
+        }
+        /* summary com cor do estado */
+        if (cid == IDC_PING_SUMMARY) {
+            if (wstate == PING_ST_OK)   SetTextColor(hdc, RGB(27,153,66));
+            if (wstate == PING_ST_FAIL || wstate == PING_ST_ERROR)
+                                        SetTextColor(hdc, RGB(160,40,30));
+            SetBkMode(hdc, TRANSPARENT);
+            return (LRESULT)s_br_face;
+        }
+        return (LRESULT)NULL;
     }
     case WM_COMMAND:
         if (LOWORD(wp) == IDC_PING_CLOSE || LOWORD(wp) == IDCANCEL) {
@@ -1247,7 +1375,7 @@ static void ShowPingTestDlg(HWND parent)
         reg = TRUE;
     }
 
-    int W=500, H=290;
+    int W=484, H=360;
     RECT rc; GetWindowRect(parent, &rc);
     int X = rc.left + (rc.right-rc.left-W)/2;
     int Y = rc.top  + (rc.bottom-rc.top-H)/2;
