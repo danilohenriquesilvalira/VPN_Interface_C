@@ -3,10 +3,14 @@
  * vpn.c / vpn.h are NEVER included here.
  */
 
+/* INITGUID must be defined in exactly one translation unit so that DEFINE_GUID
+ * macros in WebView2.h (and COM headers) emit the actual GUID values instead of
+ * extern declarations only.  MinGW also needs initguid.h to wire this up. */
+#define INITGUID
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <shlobj.h>
+#include <initguid.h>   /* must come after INITGUID define, before WebView2.h */
 #include <ole2.h>
 #include <string>
 #include <vector>
@@ -76,8 +80,8 @@ struct MsgHandler : ICoreWebView2WebMessageReceivedEventHandler
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
     {
-        if (riid == IID_IUnknown ||
-            riid == IID_ICoreWebView2WebMessageReceivedEventHandler) {
+        if (IsEqualIID(riid, IID_IUnknown) ||
+            IsEqualIID(riid, IID_ICoreWebView2WebMessageReceivedEventHandler)) {
             *ppv = this; AddRef(); return S_OK;
         }
         *ppv = nullptr; return E_NOINTERFACE;
@@ -113,8 +117,8 @@ struct CtrlHandler : ICreateCoreWebView2ControllerCompletedHandler
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
     {
-        if (riid == IID_IUnknown ||
-            riid == IID_ICreateCoreWebView2ControllerCompletedHandler) {
+        if (IsEqualIID(riid, IID_IUnknown) ||
+            IsEqualIID(riid, IID_ICreateCoreWebView2ControllerCompletedHandler)) {
             *ppv = this; AddRef(); return S_OK;
         }
         *ppv = nullptr; return E_NOINTERFACE;
@@ -172,8 +176,8 @@ struct EnvHandler : ICreateCoreWebView2EnvironmentCompletedHandler
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override
     {
-        if (riid == IID_IUnknown ||
-            riid == IID_ICreateCoreWebView2EnvironmentCompletedHandler) {
+        if (IsEqualIID(riid, IID_IUnknown) ||
+            IsEqualIID(riid, IID_ICreateCoreWebView2EnvironmentCompletedHandler)) {
             *ppv = this; AddRef(); return S_OK;
         }
         *ppv = nullptr; return E_NOINTERFACE;
@@ -208,11 +212,20 @@ int wv_create(HWND hwnd_parent, WvMsgCallback cb)
 
     OleInitialize(nullptr);
 
-    /* userData dir: %APPDATA%\RLS_VPN\WebView2 */
-    wchar_t userDataW[MAX_PATH];
-    if (!SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, userDataW)))
-        wcscpy_s(userDataW, MAX_PATH, L".");
-    wcscat_s(userDataW, MAX_PATH, L"\\RLS_VPN\\WebView2");
+    /* userData dir: %APPDATA%\RLS_VPN\WebView2 — use GetEnvironmentVariable
+     * to avoid the deprecated CSIDL_ API (and shlobj.h requirement). */
+    wchar_t userDataW[MAX_PATH] = L".";
+    {
+        wchar_t appData[MAX_PATH] = {};
+        if (GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH) > 0) {
+            /* appData + \RLS_VPN\WebView2, stay within MAX_PATH */
+            int rem = MAX_PATH - (int)wcslen(appData) - 1;
+            if (rem > 20) {
+                wcscpy(userDataW, appData);
+                wcscat(userDataW, L"\\RLS_VPN\\WebView2");
+            }
+        }
+    }
 
     HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
         nullptr,      /* browser executable folder — auto-detect */

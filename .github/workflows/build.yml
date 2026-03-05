@@ -34,10 +34,11 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile wv2.nupkg -UseBasicParsing
           Rename-Item wv2.nupkg wv2.zip
           Expand-Archive wv2.zip wv2sdk -Force
-          Copy-Item "wv2sdk\build\native\include\WebView2.h"        "src\" -Force
-          Copy-Item "wv2sdk\build\native\include\WebView2EnvironmentOptions.h" "src\" -Force -ErrorAction SilentlyContinue
-          Copy-Item "wv2sdk\build\native\x64\WebView2Loader.dll"    "."    -Force
-          Write-Host "WebView2.h copied to src/"
+          # Copy ALL headers (WebView2.h includes WebView2EnvironmentOptions.h etc.)
+          Copy-Item "wv2sdk\build\native\include\*.h" "src\" -Force
+          Copy-Item "wv2sdk\build\native\x64\WebView2Loader.dll" "." -Force
+          $headers = (Get-ChildItem "src\*.h" | Where-Object { $_.Name -like "WebView2*" }).Count
+          Write-Host "Copied $headers WebView2 header(s) to src/"
           Write-Host "WebView2Loader.dll copied to workspace root"
 
       - name: Download SoftEther VPN Client
