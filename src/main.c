@@ -163,25 +163,37 @@ static DWORD WINAPI WorkerThread(LPVOID param)
     ThreadData *td = (ThreadData *)param;
     int ok = 0; char msg[512] = {0};
     switch (td->op) {
-        case 1: ok=(vpn_setup     (&td->cfg,msg,sizeof msg)==0);
-                if(!msg[0]) strncpy(msg,ok?"NIC/conta configurada com sucesso.":"Falha ao configurar.",sizeof msg-1); break;
-        case 2: ok=(vpn_connect   (&td->cfg,msg,sizeof msg)==0);
-                if(!msg[0]) strncpy(msg,ok?"Ligacao estabelecida.":"Falha ao ligar.",sizeof msg-1); break;
-        case 3: vpn_disconnect    (&td->cfg,msg,sizeof msg); ok=1;
-                if(!msg[0]) strncpy(msg,"VPN desligada.",sizeof msg-1); break;
-        case 4: vpn_reset         (&td->cfg,msg,sizeof msg); ok=1;
-                if(!msg[0]) strncpy(msg,"Configuracao reposta.",sizeof msg-1); break;
+        case 1:
+            ok=(vpn_setup(&td->cfg,msg,sizeof msg)==0);
+            if(!msg[0]) strncpy(msg,ok?"NIC/conta configurada com sucesso.":"Falha ao configurar.",sizeof msg-1);
+            break;
+        case 2:
+            ok=(vpn_connect(&td->cfg,msg,sizeof msg)==0);
+            if(!msg[0]) strncpy(msg,ok?"Ligacao estabelecida.":"Falha ao ligar.",sizeof msg-1);
+            break;
+        case 3:
+            vpn_disconnect(&td->cfg,msg,sizeof msg); ok=1;
+            if(!msg[0]) strncpy(msg,"VPN desligada.",sizeof msg-1);
+            break;
+        case 4:
+            vpn_reset(&td->cfg,msg,sizeof msg); ok=1;
+            if(!msg[0]) strncpy(msg,"Configuracao reposta.",sizeof msg-1);
+            break;
         case 5: {
             int r=vpn_install_silent(td->se_dir);
-            if(r!=0){strncpy(msg,"Falha ao instalar SoftEther.",sizeof msg-1);break;}
+            if(r!=0){ strncpy(msg,"Falha ao instalar SoftEther.",sizeof msg-1); break; }
             vpn_start_service();
             ok=(vpn_setup(&td->cfg,msg,sizeof msg)==0);
             if(!msg[0]) strncpy(msg,ok?"SoftEther instalado e configurado.":"Instalado mas configuracao falhou.",sizeof msg-1);
             break;
         }
-        case 6: ok=(vpn_set_static_ip(td->ip,td->mask,msg,sizeof msg)==0);
-                if(!msg[0]) strncpy(msg,ok?"IP estatico aplicado.":"Falha ao aplicar IP.",sizeof msg-1); break;
-        default: strncpy(msg,"Operacao desconhecida.",sizeof msg-1); break;
+        case 6:
+            ok=(vpn_set_static_ip(td->ip,td->mask,msg,sizeof msg)==0);
+            if(!msg[0]) strncpy(msg,ok?"IP estatico aplicado.":"Falha ao aplicar IP.",sizeof msg-1);
+            break;
+        default:
+            strncpy(msg,"Operacao desconhecida.",sizeof msg-1);
+            break;
     }
     PostMessageA(g_hwnd, WM_VPN_RESULT, (WPARAM)ok, (LPARAM)_strdup(msg));
     free(td); return 0;
@@ -446,7 +458,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_VPN_RESULT: {
-        int ok=(int)wp;
         const char *txt=(const char *)lp;
         g_busy=0;
         ShowWindow(h_progress,SW_HIDE);
@@ -489,7 +500,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nCmdShow)
     WNDCLASSEXW wc={0};
     wc.cbSize=sizeof wc; wc.style=CS_HREDRAW|CS_VREDRAW;
     wc.lpfnWndProc=WndProc; wc.hInstance=hInst;
-    wc.hCursor=LoadCursorW(NULL,IDC_ARROW);
+    wc.hCursor=LoadCursorW(NULL,(LPCWSTR)IDC_ARROW);
     wc.hbrBackground=(HBRUSH)GetStockObject(BLACK_BRUSH);
     wc.lpszClassName=L"RLS_VPN_WIN32";
     wc.hIcon=LoadIconW(hInst,MAKEINTRESOURCEW(1));
