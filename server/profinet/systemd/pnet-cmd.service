@@ -1,0 +1,6 @@
+[Unit]
+Description=Executar comandos PROFINET do PLC
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pnet-cmd-handler.sh

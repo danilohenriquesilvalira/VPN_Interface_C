@@ -1,0 +1,9 @@
+[Unit]
+Description=Observar comandos PROFINET do PLC
+
+[Path]
+PathExists=/tmp/pnet_cmd
+Unit=pnet-cmd.service
+
+[Install]
+WantedBy=multi-user.target

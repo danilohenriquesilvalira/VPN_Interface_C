@@ -1,0 +1,6 @@
+[Unit]
+Description=Actualiza estado do sistema para PROFINET p-net
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pnet-status-update.sh

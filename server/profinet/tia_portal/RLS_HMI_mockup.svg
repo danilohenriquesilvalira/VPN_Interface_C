@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520" viewBox="0 0 900 520"
+     font-family="'Segoe UI', Arial, sans-serif">
+
+  <!-- ░░ FUNDO ░░ -->
+  <rect width="900" height="520" fill="#0d1117"/>
+
+  <!-- ░░ HEADER ░░ -->
+  <rect x="0" y="0" width="900" height="64" fill="#161b22"/>
+  <rect x="0" y="63" width="900" height="1" fill="#30363d"/>
+  <rect x="0" y="0" width="4" height="64" fill="#1f6feb"/>
+  <circle cx="30" cy="32" r="12" fill="#1f6feb" opacity="0.18"/>
+  <circle cx="30" cy="32" r="7"  fill="#1f6feb"/>
+  <text x="50" y="25" font-size="16" font-weight="700" fill="#e6edf3">RLS MiniPC</text>
+  <text x="50" y="45" font-size="11" fill="#6e7681">PROFINET Gateway  ·  eth0: 192.168.1.50</text>
+  <text x="640" y="25" font-size="11" fill="#6e7681">2026-03-06</text>
+  <text x="640" y="44" font-size="11" fill="#6e7681">15:42:07</text>
+  <!-- Badge sistema OK -->
+  <rect x="736" y="17" width="148" height="30" rx="15" fill="#12261e" stroke="#238636" stroke-width="1"/>
+  <circle cx="758" cy="32" r="5" fill="#3fb950"/>
+  <text x="771" y="37" font-size="12" font-weight="600" fill="#3fb950">SISTEMA OK</text>
+
+  <!-- ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+       COLUNA ESQUERDA  x=12..451
+       ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ -->
+
+  <!-- ── CARD: SERVIÇOS ── -->
+  <rect x="12" y="76" width="440" height="264" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <text x="30" y="100" font-size="10" font-weight="700" letter-spacing="1.5" fill="#6e7681">SERVIÇOS</text>
+  <line x1="12" y1="110" x2="452" y2="110" stroke="#21262d" stroke-width="1"/>
+
+  <!-- WiFi Ligado ✓ -->
+  <circle cx="38" cy="139" r="6"  fill="#3fb950"/>
+  <circle cx="38" cy="139" r="11" fill="#3fb950" opacity="0.12"/>
+  <text x="58"  y="144" font-size="13" fill="#e6edf3">WiFi Ligado</text>
+  <text x="442" y="144" font-size="11" fill="#3fb950" text-anchor="end">wlan0 · RLS-5G</text>
+  <line x1="24" y1="159" x2="440" y2="159" stroke="#21262d" stroke-width="1"/>
+
+  <!-- ZeroTier Online ✓ -->
+  <circle cx="38" cy="177" r="6"  fill="#3fb950"/>
+  <circle cx="38" cy="177" r="11" fill="#3fb950" opacity="0.12"/>
+  <text x="58"  y="182" font-size="13" fill="#e6edf3">ZeroTier Online</text>
+  <text x="442" y="182" font-size="11" fill="#3fb950" text-anchor="end">ONLINE</text>
+  <line x1="24" y1="197" x2="440" y2="197" stroke="#21262d" stroke-width="1"/>
+
+  <!-- ZeroTier Rede ✓ -->
+  <circle cx="38" cy="215" r="6"  fill="#3fb950"/>
+  <circle cx="38" cy="215" r="11" fill="#3fb950" opacity="0.12"/>
+  <text x="58"  y="220" font-size="13" fill="#e6edf3">ZeroTier Rede</text>
+  <text x="442" y="220" font-size="11" fill="#3fb950" text-anchor="end">AUTORIZADA</text>
+  <line x1="24" y1="235" x2="440" y2="235" stroke="#21262d" stroke-width="1"/>
+
+  <!-- SoftEther ✓ -->
+  <circle cx="38" cy="253" r="6"  fill="#3fb950"/>
+  <circle cx="38" cy="253" r="11" fill="#3fb950" opacity="0.12"/>
+  <text x="58"  y="258" font-size="13" fill="#e6edf3">SoftEther VPN</text>
+  <text x="442" y="258" font-size="11" fill="#3fb950" text-anchor="end">ACTIVO · 2 sessões</text>
+  <line x1="24" y1="273" x2="440" y2="273" stroke="#21262d" stroke-width="1"/>
+
+  <!-- Ethernet ✓ -->
+  <circle cx="38" cy="291" r="6"  fill="#3fb950"/>
+  <circle cx="38" cy="291" r="11" fill="#3fb950" opacity="0.12"/>
+  <text x="58"  y="296" font-size="13" fill="#e6edf3">Ethernet PROFINET</text>
+  <text x="442" y="296" font-size="11" fill="#3fb950" text-anchor="end">192.168.1.50</text>
+  <line x1="24" y1="311" x2="440" y2="311" stroke="#21262d" stroke-width="1"/>
+
+  <!-- Internet ✗ -->
+  <circle cx="38" cy="329" r="6"  fill="#f85149"/>
+  <circle cx="38" cy="329" r="11" fill="#f85149" opacity="0.12"/>
+  <text x="58"  y="334" font-size="13" fill="#8b949e">Internet</text>
+  <text x="442" y="334" font-size="11" fill="#f85149" text-anchor="end">SEM RESPOSTA</text>
+
+  <!-- ── CARD: REDES NO ALCANCE ── -->
+  <rect x="12" y="352" width="440" height="106" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <text x="30" y="375" font-size="10" font-weight="700" letter-spacing="1.5" fill="#6e7681">REDES WIFI NO ALCANCE</text>
+  <line x1="12" y1="384" x2="452" y2="384" stroke="#21262d" stroke-width="1"/>
+
+  <!-- P300 – não visível -->
+  <rect x="26"  y="394" width="124" height="50" rx="7" fill="#1c2128" stroke="#30363d" stroke-width="1"/>
+  <circle cx="88" cy="411" r="5" fill="#484f58"/>
+  <text x="88"  y="433" font-size="12" fill="#6e7681" text-anchor="middle">P300</text>
+
+  <!-- RLS-5G – visível (activa) -->
+  <rect x="162" y="394" width="124" height="50" rx="7" fill="#12261e" stroke="#2ea043" stroke-width="1.5"/>
+  <circle cx="224" cy="411" r="5"  fill="#3fb950"/>
+  <circle cx="224" cy="411" r="9"  fill="#3fb950" opacity="0.2"/>
+  <text x="224"  y="433" font-size="12" fill="#3fb950" font-weight="600" text-anchor="middle">RLS-5G</text>
+
+  <!-- iPhone – não visível -->
+  <rect x="298" y="394" width="144" height="50" rx="7" fill="#1c2128" stroke="#30363d" stroke-width="1"/>
+  <circle cx="370" cy="411" r="5" fill="#484f58"/>
+  <text x="370"  y="433" font-size="12" fill="#6e7681" text-anchor="middle">iPhone Danilo</text>
+
+  <!-- ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+       COLUNA DIREITA  x=460..888
+       ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ -->
+
+  <!-- ── CARD: WIFI ACTIVA ── -->
+  <rect x="460" y="76" width="428" height="130" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <text x="478" y="100" font-size="10" font-weight="700" letter-spacing="1.5" fill="#6e7681">WIFI ACTIVA</text>
+  <line x1="460" y1="110" x2="888" y2="110" stroke="#21262d" stroke-width="1"/>
+
+  <!-- Rede activa display -->
+  <rect x="476" y="120" width="396" height="72" rx="8" fill="#0a1929" stroke="#1f6feb" stroke-width="1.5"/>
+  <!-- ícone sinal (barras) -->
+  <rect x="496" y="165" width="5" height="10" rx="2" fill="#3fb950"/>
+  <rect x="505" y="158" width="5" height="17" rx="2" fill="#3fb950"/>
+  <rect x="514" y="150" width="5" height="25" rx="2" fill="#3fb950"/>
+  <rect x="523" y="143" width="5" height="32" rx="2" fill="#3fb950"/>
+  <!-- nome e detalhe -->
+  <text x="542" y="150" font-size="20" font-weight="700" fill="#e6edf3">RLS-5G</text>
+  <text x="542" y="172" font-size="11" fill="#8b949e">Indice 2  ·  Ligada</text>
+  <!-- badge OK -->
+  <rect x="820" y="138" width="38" height="20" rx="10" fill="#12261e" stroke="#2ea043" stroke-width="1"/>
+  <text x="839" y="153" font-size="10" fill="#3fb950" text-anchor="middle">OK</text>
+
+  <!-- ── CARD: COMANDOS ── -->
+  <rect x="460" y="218" width="428" height="240" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <text x="478" y="242" font-size="10" font-weight="700" letter-spacing="1.5" fill="#6e7681">COMANDOS</text>
+  <line x1="460" y1="252" x2="888" y2="252" stroke="#21262d" stroke-width="1"/>
+
+  <!-- Selector de rede -->
+  <text x="478" y="278" font-size="11" fill="#6e7681">Seleccionar rede WiFi</text>
+
+  <!-- Botão P300 (inactivo) -->
+  <rect x="478" y="286" width="118" height="34" rx="6" fill="#21262d" stroke="#30363d" stroke-width="1"/>
+  <text x="537" y="308" font-size="12" fill="#8b949e" text-anchor="middle">P300</text>
+
+  <!-- Botão RLS-5G (seleccionado) -->
+  <rect x="604" y="286" width="118" height="34" rx="6" fill="#0d2a4a" stroke="#1f6feb" stroke-width="2"/>
+  <text x="663" y="308" font-size="12" fill="#58a6ff" font-weight="700" text-anchor="middle">RLS-5G ✓</text>
+
+  <!-- Botão iPhone (inactivo) -->
+  <rect x="730" y="286" width="148" height="34" rx="6" fill="#21262d" stroke="#30363d" stroke-width="1"/>
+  <text x="804" y="308" font-size="12" fill="#8b949e" text-anchor="middle">iPhone Danilo</text>
+
+  <!-- Separador -->
+  <line x1="472" y1="336" x2="880" y2="336" stroke="#21262d" stroke-width="1"/>
+
+  <!-- ── Botão: Ligar WiFi ── -->
+  <rect x="478" y="352" width="118" height="44" rx="7" fill="#1f6feb"/>
+  <text x="537" y="369" font-size="12" font-weight="600" fill="#fff" text-anchor="middle">Ligar</text>
+  <text x="537" y="385" font-size="12" font-weight="600" fill="#fff" text-anchor="middle">WiFi</text>
+  <text x="537" y="412" font-size="9" fill="#484f58" text-anchor="middle">HMI.Ligar_WiFi</text>
+
+  <!-- ── Botão: Reiniciar ZeroTier ── -->
+  <rect x="606" y="352" width="118" height="44" rx="7" fill="#21262d" stroke="#30363d" stroke-width="1"/>
+  <text x="665" y="369" font-size="12" fill="#e6edf3" text-anchor="middle">Reiniciar</text>
+  <text x="665" y="385" font-size="12" fill="#e6edf3" text-anchor="middle">ZeroTier</text>
+  <text x="665" y="412" font-size="9" fill="#484f58" text-anchor="middle">HMI.Reiniciar_ZT</text>
+
+  <!-- ── Botão: Reiniciar SoftEther ── -->
+  <rect x="734" y="352" width="144" height="44" rx="7" fill="#21262d" stroke="#30363d" stroke-width="1"/>
+  <text x="806" y="369" font-size="12" fill="#e6edf3" text-anchor="middle">Reiniciar</text>
+  <text x="806" y="385" font-size="12" fill="#e6edf3" text-anchor="middle">SoftEther VPN</text>
+  <text x="806" y="412" font-size="9" fill="#484f58" text-anchor="middle">HMI.Reiniciar_SE</text>
+
+  <!-- ░░ FOOTER ░░ -->
+  <rect x="0" y="468" width="900" height="1" fill="#21262d"/>
+  <text x="16" y="492" font-size="10" fill="#484f58">IB0..IB3 → Status  ·  QB0..QB1 ← HMI  ·  p-net v1.0.2  ·  RLS_VPN FB v2.0</text>
+  <text x="884" y="492" font-size="10" fill="#484f58" text-anchor="end">RLS Automação · 2026</text>
+
+</svg>

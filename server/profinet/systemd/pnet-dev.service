@@ -1,0 +1,18 @@
+[Unit]
+Description=PROFINET p-net Device Server (RLS MiniPC)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/rls/pnet/p-net-1.0.2-samples/build/debug/pn_dev
+ExecStart=/home/rls/pnet/p-net-1.0.2-samples/build/debug/pn_dev/pn_dev -i eth0 -v
+Restart=always
+RestartSec=2
+Nice=-10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

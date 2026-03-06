@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer para actualizar estado PROFINET a cada 10 segundos
+
+[Timer]
+OnBootSec=15
+OnUnitActiveSec=10
+AccuracySec=2
+
+[Install]
+WantedBy=timers.target

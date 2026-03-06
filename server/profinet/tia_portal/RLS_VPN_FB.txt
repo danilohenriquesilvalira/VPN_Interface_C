@@ -1,0 +1,204 @@
+// =============================================================================
+// PASSO 1  Criar os dois UDTs no TIA Portal antes de criar o FB
+//          Menu: PLC data types > Add new data type
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// UDT_RLS_Status  -  Estado do Raspberry Pi recebido via PROFINET
+// -----------------------------------------------------------------------------
+TYPE "UDT_RLS_Status"
+VERSION : 1.0
+STRUCT
+
+    // -- Servicos (origem: IB0, um bit por servico) --
+    WiFi_Ligado     : BOOL;   // Bit 0  WiFi ligado (wlan0 com IP)
+    ZT_Online       : BOOL;   // Bit 1  ZeroTier servico ONLINE
+    ZT_Rede_OK      : BOOL;   // Bit 2  ZeroTier rede autorizada
+    SE_Activo       : BOOL;   // Bit 3  SoftEther VPN activo
+    Eth0_Ligado     : BOOL;   // Bit 4  Ethernet PROFINET com IP
+    Internet_OK     : BOOL;   // Bit 5  Internet acessivel
+
+    // -- WiFi (origem: IB1 e IB3) --
+    WiFi_Activa     : BYTE;   // IB1  Rede actualmente ligada
+                              //        0 = Nenhuma
+                              //        1 = P300
+                              //        2 = RLS-5G
+                              //        3 = iPhone de Danilo
+    P300_Visivel    : BOOL;   // IB3 bit 0  P300 no alcance
+    RLS5G_Visivel   : BOOL;   // IB3 bit 1  RLS-5G no alcance
+    iPhone_Visivel  : BOOL;   // IB3 bit 2  iPhone de Danilo no alcance
+
+    // -- SoftEther (origem: IB2) --
+    SE_Sessoes      : INT;    // IB2  Sessoes VPN activas (0..255)
+
+    // -- Diagnostico geral (calculado pelo FB) --
+    Sistema_OK      : BOOL;   // TRUE   WiFi + ZeroTier + SoftEther todos activos
+    Sistema_Falha   : BOOL;   // TRUE   Pelo menos um servico em falha
+
+END_STRUCT;
+END_TYPE
+
+
+// -----------------------------------------------------------------------------
+// UDT_RLS_Cmd  -  Comandos do HMI para o Raspberry Pi
+// -----------------------------------------------------------------------------
+TYPE "UDT_RLS_Cmd"
+VERSION : 1.0
+STRUCT
+
+    // -- Botoes de impulso (ligar a botoes momentaneos no HMI) --
+    Ligar_WiFi    : BOOL;   // Pulso  Liga ao WiFi definido em WiFi_Indice
+    Reiniciar_ZT  : BOOL;   // Pulso  Reinicia o servico ZeroTier
+    Reiniciar_SE  : BOOL;   // Pulso  Reinicia o servico SoftEther VPN
+
+    // -- Selector de rede (ligar a selector ou campo numerico no HMI) --
+    WiFi_Indice   : BYTE;   //   1 = P300  (senha: 12345678)
+                            //   2 = RLS-5G
+                            //   3 = iPhone de Danilo
+
+END_STRUCT;
+END_TYPE
+
+
+// =============================================================================
+// PASSO 2  Criar o FB RLS_VPN
+//          Menu: Program blocks > Add new block > Function Block > SCL
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// FUNCTION BLOCK : RLS_VPN
+// VERSAO         : 2.0
+// AUTOR          : RLS Automacao
+// DATA           : 2026-03-06
+//
+// DESCRICAO:
+//   Le os 4 bytes PROFINET do Raspberry (IB0..IB3), descodifica o estado
+//   de todos os servicos e disponibiliza em "Status" (UDT_RLS_Status).
+//   Recebe comandos do HMI em "HMI" (UDT_RLS_Cmd) e gera os 2 bytes
+//   PROFINET de saida (QB0..QB1) com deteccao de flanco e timer de limpeza.
+//
+// LIGACOES PROFINET:
+//   IB0_Status      <- %IB0   (Monitor byte 0: flags de estado)
+//   IB1_WiFi_Activa <- %IB1   (Monitor byte 1: rede WiFi activa)
+//   IB2_SE_Sessoes  <- %IB2   (Monitor byte 2: sessoes SoftEther)
+//   IB3_WiFi_Vis    <- %IB3   (Monitor byte 3: redes WiFi visiveis)
+//   QB0_Cmd_Flags   -> %QB0   (Control byte 0: flags de comando)
+//   QB1_WiFi_Indice -> %QB1   (Control byte 1: indice WiFi)
+// -----------------------------------------------------------------------------
+
+FUNCTION_BLOCK "RLS_VPN"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 2.0
+
+
+VAR_INPUT
+
+    // PROFINET bytes de entrada  (Raspberry Pi --> PLC)
+    IB0_Status      : BYTE;   // %IB0  Byte de estado dos servicos
+    IB1_WiFi_Activa : BYTE;   // %IB1  Rede WiFi actualmente ligada
+    IB2_SE_Sessoes  : BYTE;   // %IB2  Sessoes SoftEther activas
+    IB3_WiFi_Vis    : BYTE;   // %IB3  Redes WiFi visiveis (bitmask)
+
+    // Comandos do operador via HMI
+    HMI             : "UDT_RLS_Cmd";
+
+END_VAR
+
+
+VAR_OUTPUT
+
+    // Estado completo do Raspberry (para HMI e logica do programa)
+    Status          : "UDT_RLS_Status";
+
+    // PROFINET bytes de saida  (PLC --> Raspberry Pi)
+    QB0_Cmd_Flags   : BYTE;   // %QB0  Byte de comando (bits 0/1/2 = WiFi/ZT/SE)
+    QB1_WiFi_Indice : BYTE;   // %QB1  Indice WiFi a ligar (1/2/3)
+
+END_VAR
+
+
+VAR
+
+    _EdgeWiFi   : R_TRIG;   // Flanco positivo em HMI.Ligar_WiFi
+    _EdgeZT     : R_TRIG;   // Flanco positivo em HMI.Reiniciar_ZT
+    _EdgeSE     : R_TRIG;   // Flanco positivo em HMI.Reiniciar_SE
+    _TimerCmd   : TON;      // Timer 500ms para limpar QB0/QB1 apos envio
+    _CmdActivo  : BOOL;     // Flag interna: comando em curso aguarda timer
+
+END_VAR
+
+
+BEGIN
+
+
+// ----------------------------------------------------------------------------
+// SECCAO 1  IB0 --> Status.Servicos
+// ----------------------------------------------------------------------------
+
+    Status.WiFi_Ligado  := IB0_Status.%X0;
+    Status.ZT_Online    := IB0_Status.%X1;
+    Status.ZT_Rede_OK   := IB0_Status.%X2;
+    Status.SE_Activo    := IB0_Status.%X3;
+    Status.Eth0_Ligado  := IB0_Status.%X4;
+    Status.Internet_OK  := IB0_Status.%X5;
+
+
+// ----------------------------------------------------------------------------
+// SECCAO 2  IB1 / IB2 / IB3 --> Status.WiFi e Status.SoftEther
+// ----------------------------------------------------------------------------
+
+    Status.WiFi_Activa    := IB1_WiFi_Activa;
+    Status.SE_Sessoes     := BYTE_TO_INT(IB2_SE_Sessoes);
+    Status.P300_Visivel   := IB3_WiFi_Vis.%X0;
+    Status.RLS5G_Visivel  := IB3_WiFi_Vis.%X1;
+    Status.iPhone_Visivel := IB3_WiFi_Vis.%X2;
+
+
+// ----------------------------------------------------------------------------
+// SECCAO 3  Diagnostico geral
+// ----------------------------------------------------------------------------
+
+    Status.Sistema_OK    :=  Status.WiFi_Ligado
+                        AND  Status.ZT_Online
+                        AND  Status.ZT_Rede_OK
+                        AND  Status.SE_Activo;
+
+    Status.Sistema_Falha := NOT Status.Sistema_OK;
+
+
+// ----------------------------------------------------------------------------
+// SECCAO 4  Comandos HMI com deteccao de flanco
+//           Cada botao so envia o comando uma vez, mesmo que fique premido
+// ----------------------------------------------------------------------------
+
+    _EdgeWiFi(CLK := HMI.Ligar_WiFi);
+    _EdgeZT  (CLK := HMI.Reiniciar_ZT);
+    _EdgeSE  (CLK := HMI.Reiniciar_SE);
+
+    IF _EdgeWiFi.Q OR _EdgeZT.Q OR _EdgeSE.Q THEN
+        QB0_Cmd_Flags.%X0 := _EdgeWiFi.Q;   // Bit 0  Ligar WiFi
+        QB0_Cmd_Flags.%X1 := _EdgeZT.Q;     // Bit 1  Reiniciar ZeroTier
+        QB0_Cmd_Flags.%X2 := _EdgeSE.Q;     // Bit 2  Reiniciar SoftEther
+        QB1_WiFi_Indice   := HMI.WiFi_Indice;
+        _CmdActivo        := TRUE;
+        _TimerCmd(IN := FALSE, PT := T#500MS);
+    END_IF;
+
+
+// ----------------------------------------------------------------------------
+// SECCAO 5  Limpar QB0 / QB1 apos 500 ms
+// ----------------------------------------------------------------------------
+
+    _TimerCmd(IN := _CmdActivo, PT := T#500MS);
+
+    IF _TimerCmd.Q THEN
+        QB0_Cmd_Flags   := BYTE#0;
+        QB1_WiFi_Indice := BYTE#0;
+        _CmdActivo      := FALSE;
+        _TimerCmd(IN := FALSE, PT := T#500MS);
+    END_IF;
+
+
+END_FUNCTION_BLOCK
