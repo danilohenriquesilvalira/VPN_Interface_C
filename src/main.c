@@ -59,6 +59,7 @@
 #define WM_SCAN_DONE     (WM_APP+5)   /* scan concluido */
 #define WM_SCAN_PROGRESS (WM_APP+6)   /* wp = 1..254 */
 #define WM_PING_RESULT   (WM_APP+7)   /* lp = char* resultado (heap, receiver frees) */
+#define WM_SRV_PING      (WM_APP+8)   /* wp = 1 (online) / 0 (offline) — auto check */
 /* ---- Layout constants --------------------------------------------------- */
 #define TB_H   48   /* toolbar height px */
 #define LOG_H  150  /* log panel height px */
@@ -99,6 +100,7 @@ static int      g_last_op      = 0;
 static char     g_vpn_ip[64]   = {0};
 static BOOL     g_se_installed = FALSE;
 static HWND     g_scan_wnd     = NULL;
+static volatile int g_srv_reachable = -1;  /* -1=desconhecido 0=offline 1=online */
 
 /* ---- Network scan types ------------------------------------------------- */
 typedef struct {
@@ -292,6 +294,50 @@ static void StartOp(int op, const char *ip, const char *mask)
 }
 
 /* ======================================================================
+   Server reachability check thread - ping automatico ao servidor VPN
+   Corre a cada 8 segundos em segundo plano, nunca bloqueia o UI.
+   ====================================================================== */
+static DWORD WINAPI SrvCheckThread(LPVOID p)
+{
+    (void)p;
+    Sleep(2500); /* aguardar inicializacao da winsock */
+    for (;;) {
+        if (!g_hwnd) return 0;
+        /* Copiar host da config global (leitura rapida, race benigno) */
+        char host[256] = {0};
+        strncpy(host, g_cfg.host[0] ? g_cfg.host : DEFAULT_HOST, sizeof(host)-1);
+
+        /* Resolver endereco */
+        DWORD destIP = inet_addr(host);
+        if (destIP == INADDR_NONE) {
+            struct addrinfo hints = {0}, *res = NULL;
+            hints.ai_family   = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+            if (getaddrinfo(host, NULL, &hints, &res) == 0 && res) {
+                destIP = ((struct sockaddr_in*)res->ai_addr)->sin_addr.s_addr;
+                freeaddrinfo(res);
+            }
+        }
+
+        int reachable = 0;
+        if (destIP != INADDR_NONE) {
+            HANDLE hIcmp = IcmpCreateFile();
+            if (hIcmp != INVALID_HANDLE_VALUE) {
+                char send_buf[8] = "RLSCHK";
+                BYTE recv_buf[256] = {0};
+                DWORD ret = IcmpSendEcho(hIcmp, destIP, send_buf, 8,
+                                         NULL, recv_buf, sizeof(recv_buf), 1500);
+                reachable = (ret > 0) ? 1 : 0;
+                IcmpCloseHandle(hIcmp);
+            }
+        }
+
+        if (g_hwnd) PostMessageA(g_hwnd, WM_SRV_PING, (WPARAM)reachable, 0);
+        Sleep(8000);
+    }
+}
+
+/* ======================================================================
    Status polling thread - NUNCA bloqueia o UI thread
    ====================================================================== */
 static DWORD WINAPI PollThread(LPVOID p)
@@ -369,11 +415,18 @@ static void FillListViews(const VpnStatus *st)
         lvi.pszText = acct;
         ListView_InsertItem(g_list_conns, &lvi);
     }
+    /* Col 5: Servidor Online/Offline — resultado do ping automatico */
+    const char *srv_reachability;
+    if      (g_srv_reachable == 1)  srv_reachability = "Online";
+    else if (g_srv_reachable == 0)  srv_reachability = "Offline";
+    else                            srv_reachability = "A verificar...";
+
     ListView_SetItemText(g_list_conns, 0, 0, acct);
     ListView_SetItemText(g_list_conns, 0, 1, (char*)estado_conn);
     ListView_SetItemText(g_list_conns, 0, 2, (char*)servidor);
     ListView_SetItemText(g_list_conns, 0, 3, (char*)hub);
     ListView_SetItemText(g_list_conns, 0, 4, (char*)nic_se);
+    ListView_SetItemText(g_list_conns, 0, 5, (char*)srv_reachability);
     ListView_RedrawItems(g_list_conns, 0, 0);
 
     /* ── Tabela de Adaptadores ──────────────────────────────────────────
@@ -1528,9 +1581,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
         /* --- ListViews ----------------------------------------------- */
         {
-            const char *cols[]={"Nome da Ligacao VPN","Estado","Servidor VPN","Hub Virtual","Adaptador Virtual"};
-            const int   wids[]={260,160,300,160,180};
-            g_list_conns=MakeListView(hwnd,IDC_LIST_CONNS,cols,wids,5);
+            const char *cols[]={"Nome da Ligacao VPN","Estado","Servidor VPN","Hub Virtual","Adaptador Virtual","Servidor"};
+            const int   wids[]={240,150,260,140,160,120};
+            g_list_conns=MakeListView(hwnd,IDC_LIST_CONNS,cols,wids,6);
         }
         {
             const char *cols[]={"Adaptador Virtual (Windows)","MAC Address","Estado","Endereco IP"};
@@ -1569,6 +1622,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         /* Polling thread (TRUE = nao dorme na primeira iteracao) */
         HANDLE ht=CreateThread(NULL,0,PollThread,(LPVOID)(UINT_PTR)TRUE,0,NULL);
         if(ht) CloseHandle(ht);
+
+        /* Server reachability check thread (ping automatico ao servidor) */
+        HANDLE hts=CreateThread(NULL,0,SrvCheckThread,NULL,0,NULL);
+        if(hts) CloseHandle(hts);
 
         return 0;
     }
@@ -1682,37 +1739,64 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_NOTIFY: {
         NMHDR *hdr = (NMHDR*)lp;
-        if (hdr->code == NM_CUSTOMDRAW &&
-            (hdr->hwndFrom==g_list_conns || hdr->hwndFrom==g_list_adaps)) {
+        if (hdr->code == NM_CUSTOMDRAW && hdr->hwndFrom == g_list_conns) {
             NMLVCUSTOMDRAW *cd = (NMLVCUSTOMDRAW*)lp;
             if (cd->nmcd.dwDrawStage == CDDS_PREPAINT)
                 return CDRF_NOTIFYITEMDRAW;
-            if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
-                /* Color row based on VPN state */
-                switch(g_state) {
-                case VPN_CONNECTED:
-                    cd->clrTextBk = RGB(0,160,0);
-                    cd->clrText   = RGB(255,255,255);
-                    break;
-                case VPN_CONNECTING:
-                    cd->clrTextBk = RGB(220,150,0);
-                    cd->clrText   = RGB(255,255,255);
-                    break;
-                case VPN_DISCONNECTED:
-                case VPN_NOT_CONFIGURED:
-                    cd->clrTextBk = RGB(200,0,0);
-                    cd->clrText   = RGB(255,255,255);
-                    break;
-                default:
-                    cd->clrTextBk = RGB(100,100,110);
-                    cd->clrText   = RGB(220,220,220);
-                    break;
+            if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT)
+                return CDRF_NOTIFYSUBITEMDRAW;
+            if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
+                /* Col 1: Estado ligacao — "Connected"=verde, "Offline"=vermelho */
+                if (cd->iSubItem == 1) {
+                    char txt[64] = {0};
+                    ListView_GetItemText(g_list_conns,
+                                        (int)cd->nmcd.dwItemSpec, 1,
+                                        txt, (int)sizeof(txt) - 1);
+                    if (strstr(txt, "Connected")) {
+                        cd->clrTextBk = RGB(0, 160, 0);
+                        cd->clrText   = RGB(255, 255, 255);
+                    } else if (strstr(txt, "Offline")) {
+                        cd->clrTextBk = RGB(200, 0, 0);
+                        cd->clrText   = RGB(255, 255, 255);
+                    } else {
+                        cd->clrTextBk = CLR_DEFAULT;
+                        cd->clrText   = CLR_DEFAULT;
+                    }
+                    return CDRF_NEWFONT;
                 }
-                return CDRF_NEWFONT;
+                /* Col 5: Servidor — "Online"=verde, "Offline"=vermelho */
+                if (cd->iSubItem == 5) {
+                    char txt[32] = {0};
+                    ListView_GetItemText(g_list_conns,
+                                        (int)cd->nmcd.dwItemSpec, 5,
+                                        txt, (int)sizeof(txt) - 1);
+                    if (strstr(txt, "Online")) {
+                        cd->clrTextBk = RGB(0, 160, 0);
+                        cd->clrText   = RGB(255, 255, 255);
+                    } else if (strstr(txt, "Offline")) {
+                        cd->clrTextBk = RGB(200, 0, 0);
+                        cd->clrText   = RGB(255, 255, 255);
+                    } else {
+                        cd->clrTextBk = CLR_DEFAULT;
+                        cd->clrText   = CLR_DEFAULT;
+                    }
+                    return CDRF_NEWFONT;
+                }
             }
         }
         return CDRF_DODEFAULT;
     }
+
+    case WM_SRV_PING:
+        /* Resultado do ping automatico ao servidor VPN */
+        g_srv_reachable = (int)wp;
+        if (ListView_GetItemCount(g_list_conns) > 0) {
+            const char *s = (g_srv_reachable == 1) ? "Online" : "Offline";
+            ListView_SetItemText(g_list_conns, 0, 5, (char*)s);
+            ListView_RedrawItems(g_list_conns, 0, 0);
+            UpdateWindow(g_list_conns);
+        }
+        return 0;
 
     case WM_DESTROY:
         g_hwnd=NULL;
