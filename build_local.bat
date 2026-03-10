@@ -31,7 +31,7 @@ if /i "%1"=="clean" (
     goto :eof
 )
 
-echo [BUILD] Compilando v1.5.4...
+echo [BUILD] Compilando v2.0.0...
 taskkill /F /IM rls_vpn.exe >nul 2>&1
 timeout /t 1 /nobreak >nul
 mingw32-make 2>&1

@@ -1,0 +1,119 @@
+# .github/workflows/release.yml
+#
+# CI/CD: compila rls_vpn.exe com MinGW-w64, empacota o instalador NSIS
+# e cria um GitHub Release sempre que for feito push de uma tag v*.
+#
+# Fluxo:
+#   1. git tag v2.0.1 && git push origin v2.0.1
+#   2. Este workflow e acionado automaticamente
+#   3. Compila rls_vpn.exe no Windows Runner
+#   4. Gera RLS_VPN_Setup.exe com NSIS
+#   5. Cria ou actualiza o GitHub Release com o installer como asset
+
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"          # dispara em todas as tags como v2.0.0, v2.1.0, etc.
+
+permissions:
+  contents: write    # necessario para criar releases e upload de assets
+
+jobs:
+  build:
+    name: Build installer (Windows)
+    runs-on: windows-latest
+
+    steps:
+      # ---------------------------------------------------------------
+      # 1. Codigo fonte
+      # ---------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------------
+      # 2. Ferramentas de compilacao: MinGW-w64 via MSYS2
+      # ---------------------------------------------------------------
+      - name: Setup MSYS2 + MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-binutils
+            make
+
+      # ---------------------------------------------------------------
+      # 3. Compilar rls_vpn.exe
+      # ---------------------------------------------------------------
+      - name: Compile rls_vpn.exe
+        shell: msys2 {0}
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          mingw32-make
+          ls -lh rls_vpn.exe
+
+      # ---------------------------------------------------------------
+      # 4. Extrair versao da tag (ex: v2.0.0 -> 2.0.0)
+      # ---------------------------------------------------------------
+      - name: Extract version
+        id: version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VER="${TAG#v}"
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          echo "ver=$VER"   >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------
+      # 5. Instalar NSIS e gerar RLS_VPN_Setup.exe
+      #    O /DAPP_VERSION sobrescreve a define no .nsi para que o
+      #    installer reflicta exactamente a tag publicada.
+      # ---------------------------------------------------------------
+      - name: Install NSIS
+        run: choco install nsis --no-progress -y
+
+      - name: Build installer with NSIS
+        shell: pwsh
+        run: |
+          $ver  = "${{ steps.version.outputs.ver }}"
+          $verF = "$ver.0"    # NSIS VIProductVersion precisa de 4 componentes
+          & "C:\Program Files (x86)\NSIS\makensis.exe" `
+            /DAPP_VERSION=$ver `
+            /DAPP_VERSION_FULL=$verF `
+            installer.nsi
+          if (-not (Test-Path "RLS_VPN_Setup.exe")) {
+            Write-Error "RLS_VPN_Setup.exe nao foi gerado!"
+            exit 1
+          }
+          Write-Host "Installer gerado: $(Get-Item RLS_VPN_Setup.exe | Select-Object -ExpandProperty Length) bytes"
+
+      # ---------------------------------------------------------------
+      # 6. Criar GitHub Release e fazer upload do installer
+      # ---------------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:   ${{ steps.version.outputs.tag }}
+          name:       "RLS Automacao VPN ${{ steps.version.outputs.tag }}"
+          draft:      false
+          prerelease: false
+          body: |
+            ## RLS Automacao VPN ${{ steps.version.outputs.tag }}
+
+            ### Instalacao / Upgrade
+            1. Descarregue **RLS_VPN_Setup.exe** abaixo
+            2. Execute como Administrador
+            3. O instalador detecta automaticamente se existe versao anterior:
+               - **Nova instalacao** — instala SoftEther + RLS VPN
+               - **Upgrade** — actualiza apenas o executavel, preserva todos os
+                 perfis guardados em `%APPDATA%\RLS_Automacao\` e nao
+                 reinstala o SoftEther
+
+            ### Notas
+            - Compativel com Windows 10/11 (64-bit)
+            - Requer SoftEther VPN Client (instalado automaticamente na primeira instalacao)
+          files: |
+            RLS_VPN_Setup.exe

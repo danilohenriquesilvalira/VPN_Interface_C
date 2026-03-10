@@ -1,8 +1,18 @@
 ; installer.nsi - RLS Automacao VPN - NSIS Installer Script
 ; Requires NSIS 3.x (https://nsis.sourceforge.io)
 ; Build: makensis installer.nsi
+;
+; UPGRADE SUPPORT:
+;   - Detecta versao anterior instalada via registo
+;   - Fecha o processo em execucao antes de sobrescrever
+;   - Nao reinstala o SoftEther se ja estiver presente
+;   - Preserva perfis guardados em %APPDATA%
 
 !include "MUI2.nsh"
+
+;--- Versao centralizada (alterada pelo CI) ---
+!define APP_VERSION      "2.0.0"
+!define APP_VERSION_FULL "2.0.0.0"
 
 ;--- General ---
 Name               "RLS Automacao VPN"
@@ -13,11 +23,11 @@ RequestExecutionLevel admin
 Unicode True
 
 ;--- Version info ---
-VIProductVersion  "1.3.0.0"
+VIProductVersion  "${APP_VERSION_FULL}"
 VIAddVersionKey   "ProductName"      "RLS Automacao VPN"
 VIAddVersionKey   "CompanyName"      "RLS Automacao"
 VIAddVersionKey   "FileDescription"  "RLS Automacao VPN Installer"
-VIAddVersionKey   "FileVersion"      "1.3.0.0"
+VIAddVersionKey   "FileVersion"      "${APP_VERSION_FULL}"
 VIAddVersionKey   "LegalCopyright"   "Copyright 2026 RLS Automacao"
 
 ;--- MUI Settings ---
@@ -28,11 +38,11 @@ VIAddVersionKey   "LegalCopyright"   "Copyright 2026 RLS Automacao"
 !define MUI_HEADERIMAGE_BITMAP       "src\banner.bmp"
 !define MUI_HEADERIMAGE_RIGHT
 
-;--- Texts ---
-!define MUI_WELCOMEPAGE_TITLE        "Bem-vindo ao RLS Automacao VPN"
-!define MUI_WELCOMEPAGE_TEXT         "Este assistente guidara a instalacao do RLS Automacao VPN v1.3.0.$\r$\n$\r$\nO SoftEther VPN Client sera instalado automaticamente durante este processo.$\r$\n$\r$\nClique em Instalar para continuar."
-!define MUI_FINISHPAGE_TITLE         "Instalacao concluida"
-!define MUI_FINISHPAGE_TEXT          "O RLS Automacao VPN foi instalado com sucesso.$\r$\n$\r$\nClique em Concluir para sair."
+;--- Textos (detecta se e upgrade ou instalacao nova) ---
+!define MUI_WELCOMEPAGE_TITLE        "Bem-vindo ao RLS Automacao VPN ${APP_VERSION}"
+!define MUI_WELCOMEPAGE_TEXT         "Este assistente instalara (ou actualizara) o RLS Automacao VPN v${APP_VERSION}.$\r$\n$\r$\nSe ja tiver uma versao anterior instalada, ela sera actualizada automaticamente sem perder as suas configuracoes.$\r$\n$\r$\nClique em Instalar para continuar."
+!define MUI_FINISHPAGE_TITLE         "Instalacao/Actualizacao concluida"
+!define MUI_FINISHPAGE_TEXT          "RLS Automacao VPN v${APP_VERSION} foi instalado com sucesso.$\r$\n$\r$\nClique em Concluir para sair."
 !define MUI_FINISHPAGE_RUN           "$INSTDIR\rls_vpn.exe"
 !define MUI_FINISHPAGE_RUN_TEXT      "Iniciar RLS Automacao VPN"
 
@@ -49,35 +59,67 @@ VIAddVersionKey   "LegalCopyright"   "Copyright 2026 RLS Automacao"
 
 ;--- Install Section ---
 Section "Principal" SecMain
+
+  ; ----------------------------------------------------------------
+  ; UPGRADE: fechar o processo em execucao antes de sobrescrever
+  ; ----------------------------------------------------------------
+  DetailPrint "A verificar se existe versao anterior em execucao..."
+  FindWindow $0 "" "RLS Automacao VPN"
+  IntCmp $0 0 no_running_win
+    SendMessage $0 ${WM_CLOSE} 0 0
+    Sleep 1200
+  no_running_win:
+  ; Matar processo residual (seguranca)
+  ExecWait 'taskkill /F /IM rls_vpn.exe' $1
+
+  ; ----------------------------------------------------------------
+  ; UPGRADE: usar dir de instalacao anterior se existir
+  ; ----------------------------------------------------------------
+  ReadRegStr $R0 HKLM "Software\RLS Automacao VPN" "Install_Dir"
+  StrCmp $R0 "" use_default_dir
+    StrCpy $INSTDIR $R0
+  use_default_dir:
+
   SetOutPath "$INSTDIR"
 
-  ; Main executable
+  ; Executavel principal (sempre substituido)
   File "rls_vpn.exe"
 
-  ; WebView2 bootstrap DLL (required for WebView2 interface)
+  ; WebView2 bootstrap DLL
   IfFileExists "WebView2Loader.dll" 0 wv2_skip
     File "WebView2Loader.dll"
   wv2_skip:
 
-  ; SoftEther installer — copia e executa silenciosamente
+  ; ----------------------------------------------------------------
+  ; SoftEther: so instala se NAO estiver ja instalado
+  ; ----------------------------------------------------------------
   IfFileExists "se_client.exe" 0 se_skip
-    File "se_client.exe"
-    DetailPrint "Instalando SoftEther VPN Client..."
-    ExecWait '"$INSTDIR\se_client.exe" /SILENT /NORESTART'
-    DetailPrint "SoftEther VPN Client instalado."
+    ReadRegStr $R1 HKLM "SOFTWARE\SoftEther VPN Client" "ExeFile"
+    StrCmp $R1 "" se_install se_already
+    se_install:
+      File "se_client.exe"
+      DetailPrint "Instalando SoftEther VPN Client..."
+      ExecWait '"$INSTDIR\se_client.exe" /SILENT /NORESTART'
+      DetailPrint "SoftEther VPN Client instalado."
+      Goto se_skip
+    se_already:
+      DetailPrint "SoftEther VPN Client ja instalado — a ignorar."
   se_skip:
 
-  ; Registry entries
+  ; ----------------------------------------------------------------
+  ; Registry entries (versao actualizada)
+  ; ----------------------------------------------------------------
   WriteRegStr HKLM "Software\RLS Automacao VPN" "Install_Dir" "$INSTDIR"
+  WriteRegStr HKLM "Software\RLS Automacao VPN" "Version"     "${APP_VERSION}"
   WriteRegStr HKLM \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\RLSAutomacaoVPN" \
     "DisplayName" "RLS Automacao VPN"
   WriteRegStr HKLM \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\RLSAutomacaoVPN" \
-    "UninstallString" "$INSTDIR\Uninstall.exe"
+    "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
   WriteRegStr HKLM \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\RLSAutomacaoVPN" \
-    "DisplayVersion" "1.3.0"
+    "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKLM \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\RLSAutomacaoVPN" \
     "Publisher" "RLS Automacao"
@@ -87,6 +129,9 @@ Section "Principal" SecMain
   WriteRegStr HKLM \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\RLSAutomacaoVPN" \
     "URLInfoAbout" "https://github.com/danilohenriquesilvalira/VPN_Interface_C"
+  WriteRegStr HKLM \
+    "Software\Microsoft\Windows\CurrentVersion\Uninstall\RLSAutomacaoVPN" \
+    "HelpLink" "https://github.com/danilohenriquesilvalira/VPN_Interface_C/releases"
   WriteRegDWORD HKLM \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\RLSAutomacaoVPN" \
     "NoModify" 1
@@ -97,12 +142,14 @@ Section "Principal" SecMain
   ; Uninstaller
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
-  ; Shortcuts
+  ; Shortcuts (idempotente — sobrescreve se ja existirem)
   CreateDirectory "$SMPROGRAMS\RLS Automacao"
   CreateShortCut "$SMPROGRAMS\RLS Automacao\RLS Automacao VPN.lnk" \
     "$INSTDIR\rls_vpn.exe" "" "$INSTDIR\rls_vpn.exe" 0
   CreateShortCut "$DESKTOP\RLS Automacao VPN.lnk" \
     "$INSTDIR\rls_vpn.exe" "" "$INSTDIR\rls_vpn.exe" 0
+
+  DetailPrint "RLS Automacao VPN v${APP_VERSION} instalado/actualizado com sucesso."
 SectionEnd
 
 ;--- Uninstall Section ---

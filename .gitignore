@@ -1,0 +1,26 @@
+# Compiled objects
+src/*.o
+src/*.d
+
+# Executables / installers (built by CI)
+rls_vpn.exe
+RLS_VPN_Setup.exe
+*.exe
+!src/**/*.exe
+
+# SoftEther bundled installer (too large for git)
+se_client.exe
+WebView2Loader.dll
+
+# Build artifacts
+*.res
+
+# Editor / OS
+.vscode/
+*.swp
+*~
+Thumbs.db
+.DS_Store
+
+# NSIS temp files
+*.compiled

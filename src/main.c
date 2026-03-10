@@ -1,5 +1,5 @@
 ﻿/*
- * main.c - RLS Automacao VPN Client v1.5.4
+ * main.c - RLS Automacao VPN Client v2.0.0
  * Interface estilo SoftEther: menu bar, ListViews, status bar, toolbar.
  * Polling de estado em thread dedicada - UI thread NUNCA bloqueia.
  *
@@ -8,6 +8,9 @@
  *         pre-popular ListView no arranque, config dialog maior
  * v1.5.4: fix NicCreate Error 32 - remove adaptador TAP orfao do Windows
  *         via PowerShell + restart servico antes de retentar NicCreate
+ * v2.0.0: Multi-profile manager - lista de conexoes independentes.
+ *         Uma unica NIC VPN partilhada; disconnect automatico antes de
+ *         ligar um perfil diferente; persistencia JSON local.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -22,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "vpn.h"
+#include "profiles.h"
 
 /* ---- Menu IDs ----------------------------------------------------------- */
 #define IDM_CONNECT    1001
@@ -37,6 +41,8 @@
 #define IDM_TOGGLE     1012   /* single Ligar/Desligar toggle button */
 #define IDM_SCAN       1013   /* scan de rede VPN */
 #define IDM_PINGTEST   1014   /* ping ao servidor VPN */
+#define IDM_ADD_CONN   1015   /* adicionar nova conexao */
+#define IDM_DEL_CONN   1016   /* remover conexao selecionada */
 
 /* ---- Control IDs -------------------------------------------------------- */
 #define IDC_LIST_CONNS    200
@@ -88,7 +94,10 @@ static HWND     g_list_adaps = NULL;
 static HWND     g_log        = NULL;
 static HWND     g_statusbar  = NULL;
 static BOOL     g_busy       = FALSE;
-static VpnConfig g_cfg;
+/* Multi-profile globals */
+static VpnProfileList g_profiles;       /* lista completa de perfis         */
+static VpnConfig      g_cfg;            /* config activa (do perfil activo)  */
+static int            g_sel_idx = 0;    /* indice seleccionado na ListView   */
 static VpnState  g_state     = VPN_NOT_INSTALLED;
 static HFONT    g_font_ui    = NULL;
 static HFONT    g_font_bold  = NULL;
@@ -129,7 +138,9 @@ static void LayoutChildren(HWND);
    Remaining buttons: regular BS_PUSHBUTTON.                                */
 static const struct { int id; const char *label; } g_tbBtns[] = {
     {IDM_TOGGLE,   "LIGAR"},            /* owner-drawn toggle */
-    {IDM_SAVE_CFG, "Configurar VPN"},   /* abre dialogo de config */
+    {IDM_ADD_CONN, "+ Conexao"},        /* adicionar novo perfil */
+    {IDM_SAVE_CFG, "Configurar VPN"},   /* editar perfil selecionado */
+    {IDM_DEL_CONN, "Remover"},          /* remover perfil selecionado */
     {IDM_RESET,    "Reset"},
     {IDM_SCAN,     "Scan Rede"},        /* varredura de IP na rede VPN */
     {IDM_PINGTEST, "Teste Servidor"},   /* ping ao servidor configurado */
@@ -181,7 +192,15 @@ static const char *StateStr(VpnState s)
 /* ======================================================================
    Worker thread (connect / disconnect / setup / install / etc.)
    ====================================================================== */
-typedef struct { int op; VpnConfig cfg; char ip[64]; char mask[64]; } WorkData;
+/* op 7 = disconnect_then_connect: desliga o perfil activo e liga o novo.
+   O campo cfg contem o perfil a LIGAR; prev_account_name o perfil a DESLIGAR. */
+typedef struct {
+    int      op;
+    VpnConfig cfg;
+    char     ip[64];
+    char     mask[64];
+    char     prev_account_name[64];  /* para op 7: conta a desligar antes */
+} WorkData;
 
 static void vpn_log_cb(const char *msg, void *ctx)
 {
@@ -262,6 +281,27 @@ static DWORD WINAPI WorkerThread(LPVOID p)
                : "Falha ao aplicar IP.", sizeof msg-1);
         break;
 
+    /* ── op 7: Desligar perfil activo e ligar perfil novo ────── */
+    case 7: {
+        /* Passo 1: desligar conta anteriormente activa */
+        if (d->prev_account_name[0]) {
+            VpnConfig prev_cfg = d->cfg;
+            strncpy(prev_cfg.account_name, d->prev_account_name, sizeof prev_cfg.account_name - 1);
+            char dis_msg[256] = {0};
+            vpn_disconnect(&prev_cfg, dis_msg, sizeof dis_msg);
+            if (dis_msg[0] && g_hwnd)
+                PostMessageA(g_hwnd, WM_VPN_LOG, 0, (LPARAM)_strdup(dis_msg));
+            /* Curta pausa para o SoftEther processar o disconnect */
+            Sleep(1200);
+        }
+        /* Passo 2: ligar novo perfil */
+        ok = vpn_connect(&d->cfg, msg, sizeof msg);
+        if (!msg[0]) strncpy(msg,
+            ok ? "Nova ligacao iniciada."
+               : "Falha ao ligar novo perfil.", sizeof msg - 1);
+        break;
+    }
+
     default:
         strncpy(msg, "Operacao desconhecida.", sizeof msg-1);
         break;
@@ -291,6 +331,49 @@ static void StartOp(int op, const char *ip, const char *mask)
 
     HANDLE ht = CreateThread(NULL,0,WorkerThread,d,0,NULL);
     if (ht) CloseHandle(ht); else { free(d); g_busy=FALSE; }
+}
+
+/* StartConnect: ligar o perfil de indice idx.
+   Se outro perfil estiver activo (g_profiles.active_idx != -1 e != idx),
+   usa op 7 para desligar primeiro e so depois ligar.
+   Se o mesmo perfil estiver activo ja nao faz nada.                      */
+static void StartConnect(int idx)
+{
+    if (idx < 0 || idx >= g_profiles.count) return;
+    if (g_busy) {
+        MessageBoxA(g_hwnd,"Aguardar operacao em curso.","RLS VPN",MB_ICONINFORMATION);
+        return;
+    }
+
+    /* Actualizar g_cfg para o perfil seleccionado */
+    profiles_to_cfg(&g_profiles.items[idx], &g_cfg);
+
+    int active = g_profiles.active_idx;
+
+    if (active == idx && g_connected) {
+        /* ja ligado ao mesmo perfil: nada a fazer */
+        log_append("[INFO] Perfil ja esta ligado.");
+        return;
+    }
+
+    g_busy    = TRUE;
+    g_last_op = (active >= 0 && active != idx) ? 7 : 2;
+    sb_set(1, "A processar...");
+
+    WorkData *d = (WorkData*)calloc(1, sizeof(WorkData));
+    if (!d) { g_busy = FALSE; return; }
+    d->op  = g_last_op;
+    d->cfg = g_cfg;
+
+    /* op 7: indicar qual conta desligar */
+    if (g_last_op == 7 && active >= 0 && active < g_profiles.count) {
+        strncpy(d->prev_account_name,
+                g_profiles.items[active].account_name,
+                sizeof d->prev_account_name - 1);
+    }
+
+    HANDLE ht = CreateThread(NULL, 0, WorkerThread, d, 0, NULL);
+    if (ht) CloseHandle(ht); else { free(d); g_busy = FALSE; }
 }
 
 /* ======================================================================
@@ -362,105 +445,131 @@ static DWORD WINAPI PollThread(LPVOID p)
 /* ======================================================================
    Populate ListView rows (can be called before first VPN poll)
    ====================================================================== */
+/* Auxiliar: actualiza uma celula ListView SEM piscar.
+   So chama SetItemText se o conteudo realmente mudou.           */
+static void lv_set_if_changed(HWND lv, int row, int col, const char *newval)
+{
+    char cur[512] = {0};
+    ListView_GetItemText(lv, row, col, cur, (int)sizeof(cur) - 1);
+    if (strcmp(cur, newval) != 0)
+        ListView_SetItemText(lv, row, col, (char*)newval);
+}
+
 static void FillListViews(const VpnStatus *st)
 {
     /* ── Tabela de Ligacoes VPN ─────────────────────────────────────────
-       Todos os campos vêm do SoftEther (AccountStatusGet + NicList).
-       Fallback para g_cfg apenas quando o SoftEther nao responde ainda. */
+       Uma linha por perfil.  A coluna Estado so e preenchida com dados
+       reais para o perfil activo (active_idx); os outros ficam "Offline".
+       WM_SETREDRAW FALSE/TRUE elimina o piscar causado pelo poll a cada 3s. */
 
-    /* Col 0: Nome da conta VPN */
-    char acct[64];
-    strncpy(acct, g_cfg.account_name[0] ? g_cfg.account_name : ACCOUNT_NAME,
-            sizeof acct - 1);
+    int nProfiles = g_profiles.count;
+    int active    = g_profiles.active_idx;
 
-    /* Col 1: Estado — "Connected"/"Offline" do AccountList (vpn_user reutilizado)
-       ou status detalhado do AccountStatusGet, com fallback localizado. */
-    const char *estado_conn;
-    if (st && st->vpn_user[0])
-        estado_conn = st->vpn_user;        /* "Connected" / "Offline" (AccountList Status) */
-    else if (st && st->status_detail[0])
-        estado_conn = st->status_detail;   /* "Connection Completed (...)" */
-    else if (st)
-        estado_conn = StateStr(st->state); /* fallback localizado */
-    else
-        estado_conn = "Aguardar...";
+    /* Suspender redesenho da lista de conexoes */
+    SendMessageA(g_list_conns, WM_SETREDRAW, FALSE, 0);
 
-    /* Col 2: Servidor — host:porta real do SoftEther */
-    const char *servidor;
-    char srv_fallback[320];
-    if (st && st->server_display[0])
-        servidor = st->server_display;
-    else {
-        snprintf(srv_fallback, sizeof srv_fallback, "%s:%d",
-                 g_cfg.host[0] ? g_cfg.host : DEFAULT_HOST, g_cfg.port ? g_cfg.port : DEFAULT_PORT);
-        servidor = srv_fallback;
-    }
-
-    /* Col 3: Hub — real do SoftEther */
-    const char *hub;
-    if (st && st->hub_display[0])
-        hub = st->hub_display;
-    else
-        hub = g_cfg.hub[0] ? g_cfg.hub : DEFAULT_HUB;
-
-    /* Col 4: Adaptador Virtual — nome real SoftEther (NicList) */
-    const char *nic_se = (st && st->nic_name[0]) ? st->nic_name : NIC_NAME;
-
-    /* Garantir exatamente uma linha */
-    while (ListView_GetItemCount(g_list_conns) > 1)
-        ListView_DeleteItem(g_list_conns, 0);
-    if (ListView_GetItemCount(g_list_conns) == 0) {
+    /* Ajustar numero de linhas apenas se necessario */
+    int cur_rows = ListView_GetItemCount(g_list_conns);
+    while (cur_rows < nProfiles) {
         LVITEMA lvi = {0};
         lvi.mask    = LVIF_TEXT;
-        lvi.pszText = acct;
+        lvi.iItem   = cur_rows;
+        lvi.pszText = (char*)"";
         ListView_InsertItem(g_list_conns, &lvi);
+        cur_rows++;
     }
-    /* Col 5: Servidor Online/Offline — resultado do ping automatico */
-    const char *srv_reachability;
-    if      (g_srv_reachable == 1)  srv_reachability = "Online";
-    else if (g_srv_reachable == 0)  srv_reachability = "Offline";
-    else                            srv_reachability = "A verificar...";
+    while (cur_rows > nProfiles) {
+        ListView_DeleteItem(g_list_conns, cur_rows - 1);
+        cur_rows--;
+    }
 
-    ListView_SetItemText(g_list_conns, 0, 0, acct);
-    ListView_SetItemText(g_list_conns, 0, 1, (char*)estado_conn);
-    ListView_SetItemText(g_list_conns, 0, 2, (char*)servidor);
-    ListView_SetItemText(g_list_conns, 0, 3, (char*)hub);
-    ListView_SetItemText(g_list_conns, 0, 4, (char*)nic_se);
-    ListView_SetItemText(g_list_conns, 0, 5, (char*)srv_reachability);
-    ListView_RedrawItems(g_list_conns, 0, 0);
+    /* Preencher cada linha — so actualiza celulas cujo texto mudou */
+    for (int i = 0; i < nProfiles; i++) {
+        VpnProfile *pr = &g_profiles.items[i];
+
+        /* Col 0: Nome amigavel */
+        lv_set_if_changed(g_list_conns, i, 0, pr->name[0] ? pr->name : "(sem nome)");
+
+        /* Col 1: Estado */
+        char estado[128] = {0};
+        if (i == active) {
+            if (st && st->vpn_user[0])
+                strncpy(estado, st->vpn_user, sizeof estado - 1);
+            else if (st && st->status_detail[0])
+                strncpy(estado, st->status_detail, sizeof estado - 1);
+            else if (st)
+                strncpy(estado, StateStr(st->state), sizeof estado - 1);
+            else
+                strncpy(estado, "Aguardar...", sizeof estado - 1);
+        } else {
+            strncpy(estado, "Offline", sizeof estado - 1);
+        }
+        lv_set_if_changed(g_list_conns, i, 1, estado);
+
+        /* Col 2: Servidor */
+        char srv[320] = {0};
+        if (i == active && st && st->server_display[0])
+            strncpy(srv, st->server_display, sizeof srv - 1);
+        else
+            snprintf(srv, sizeof srv, "%s:%d", pr->host, (int)pr->port);
+        lv_set_if_changed(g_list_conns, i, 2, srv);
+
+        /* Col 3: Hub */
+        char hub[64] = {0};
+        if (i == active && st && st->hub_display[0])
+            strncpy(hub, st->hub_display, sizeof hub - 1);
+        else
+            strncpy(hub, pr->hub[0] ? pr->hub : DEFAULT_HUB, sizeof hub - 1);
+        lv_set_if_changed(g_list_conns, i, 3, hub);
+
+        /* Col 4: Adaptador Virtual — sempre a mesma NIC */
+        const char *nic_se = (i == active && st && st->nic_name[0])
+                             ? st->nic_name : NIC_NAME;
+        lv_set_if_changed(g_list_conns, i, 4, nic_se);
+
+        /* Col 5: Servidor Online/Offline */
+        const char *reach;
+        if (i == active) {
+            if      (g_srv_reachable == 1)  reach = "Online";
+            else if (g_srv_reachable == 0)  reach = "Offline";
+            else                            reach = "A verificar...";
+        } else {
+            reach = "---";
+        }
+        lv_set_if_changed(g_list_conns, i, 5, reach);
+    }
+
+    /* Retomar redesenho e forcar uma unica passagem de pintura */
+    SendMessageA(g_list_conns, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_list_conns, NULL, FALSE);
 
     /* ── Tabela de Adaptadores ──────────────────────────────────────────
-       Col 0: Nome Windows do adaptador (find_vpn_adapter via PowerShell)
-       Col 1: MAC Address (NicList)
-       Col 2: Estado (ligado/desligado)
-       Col 3: Endereco IP (Get-NetIPAddress via PowerShell)              */
+       Uma unica NIC virtual partilhada por todos os perfis.              */
+    SendMessageA(g_list_adaps, WM_SETREDRAW, FALSE, 0);
 
     const char *nic_win = (st && st->nic_windows[0]) ? st->nic_windows : "---";
     const char *nic_mac = (st && st->nic_mac[0])     ? st->nic_mac     : "---";
 
-    /* Estado do adaptador: usa "Enabled"/"Disabled" real do NicList quando disponivel */
     const char *adap_estado;
     if (!st)
         adap_estado = "Aguardar...";
     else if (st->nic_status[0])
-        adap_estado = st->nic_status;  /* "Enabled" / "Disabled" do NicList */
+        adap_estado = st->nic_status;
     else if (st->state == VPN_CONNECTED)
         adap_estado = "Enabled";
     else
         adap_estado = "Disabled";
 
-    char ip_buf[64];
+    char ip_buf[64] = {0};
     if (st && st->local_ip[0])
         strncpy(ip_buf, st->local_ip, sizeof ip_buf - 1);
     else
         strncpy(ip_buf, "---", sizeof ip_buf - 1);
 
-    /* SoftEther service status row */
     const char *se_state  = g_se_installed ? "Instalado" : "Nao Instalado";
     char se_label[] = "SoftEther VPN Client";
     char se_dash[]  = "---";
 
-    /* Garantir exatamente 2 linhas */
     while (ListView_GetItemCount(g_list_adaps) > 2)
         ListView_DeleteItem(g_list_adaps, 0);
     if (ListView_GetItemCount(g_list_adaps) == 0) {
@@ -472,17 +581,17 @@ static void FillListViews(const VpnStatus *st)
         LVITEMA lvi2 = {0}; lvi2.mask=LVIF_TEXT; lvi2.iItem=1; lvi2.pszText=se_label;
         ListView_InsertItem(g_list_adaps, &lvi2);
     }
-    /* Row 0: NIC VPN */
-    ListView_SetItemText(g_list_adaps, 0, 0, (char*)nic_win);
-    ListView_SetItemText(g_list_adaps, 0, 1, (char*)nic_mac);
-    ListView_SetItemText(g_list_adaps, 0, 2, (char*)adap_estado);
-    ListView_SetItemText(g_list_adaps, 0, 3, ip_buf);
-    /* Row 1: SoftEther VPN Client service */
-    ListView_SetItemText(g_list_adaps, 1, 0, se_label);
-    ListView_SetItemText(g_list_adaps, 1, 1, se_dash);
-    ListView_SetItemText(g_list_adaps, 1, 2, (char*)se_state);
-    ListView_SetItemText(g_list_adaps, 1, 3, se_dash);
-    ListView_RedrawItems(g_list_adaps, 0, 1);
+    lv_set_if_changed(g_list_adaps, 0, 0, nic_win);
+    lv_set_if_changed(g_list_adaps, 0, 1, nic_mac);
+    lv_set_if_changed(g_list_adaps, 0, 2, adap_estado);
+    lv_set_if_changed(g_list_adaps, 0, 3, ip_buf);
+    lv_set_if_changed(g_list_adaps, 1, 0, se_label);
+    lv_set_if_changed(g_list_adaps, 1, 1, se_dash);
+    lv_set_if_changed(g_list_adaps, 1, 2, se_state);
+    lv_set_if_changed(g_list_adaps, 1, 3, se_dash);
+
+    SendMessageA(g_list_adaps, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_list_adaps, NULL, FALSE);
 }
 
 /* ======================================================================
@@ -491,22 +600,22 @@ static void FillListViews(const VpnStatus *st)
 static void UpdateUI(const VpnStatus *st)
 {
     g_state = st->state;
-    /* Guardar IP VPN e estado do SoftEther para uso no scan */
     if (st->local_ip[0]) strncpy(g_vpn_ip, st->local_ip, sizeof(g_vpn_ip)-1);
     g_se_installed = (BOOL)st->softether_ready;
-    /* Sync g_connected from authoritative poll result.
-       EXCEPÇÃO: se a última operação foi um disconnect (op=3), não deixamos
-       um poll "ainda ligado" (SoftEther demora 1-2s a actualizar) flipar
-       g_connected de volta para TRUE — isso causaria o botão mostrar
-       "DESLIGAR" imediatamente após desligar, impedindo religar. */
-    if (st->state == VPN_CONNECTED && g_last_op != 3)  g_connected = TRUE;
-    else if (st->state == VPN_DISCONNECTED ||
-             st->state == VPN_NOT_CONFIGURED)           g_connected = FALSE;
-    /* Redraw toggle button with updated state */
+
+    if (st->state == VPN_CONNECTED && g_last_op != 3) {
+        g_connected = TRUE;
+        /* Marcar perfil activo como o que esta seleccionado */
+        if (g_profiles.active_idx < 0)
+            g_profiles.active_idx = g_sel_idx;
+    } else if (st->state == VPN_DISCONNECTED ||
+               st->state == VPN_NOT_CONFIGURED) {
+        g_connected = FALSE;
+        g_profiles.active_idx = -1;
+    }
     if (g_btn_toggle) { InvalidateRect(g_btn_toggle,NULL,TRUE); UpdateWindow(g_btn_toggle); }
     FillListViews(st);
 
-    /* Status bar */
     char sb0[128];
     if (st->status_detail[0])
         snprintf(sb0, sizeof sb0, "  SoftEther: %s", st->status_detail);
@@ -632,8 +741,14 @@ static BOOL AskResetPassword(HWND parent)
 
 /* ======================================================================
    Dialogo de configuracao (janela modal manual)
+   Modo: g_cfg_is_new == TRUE  -> criar novo perfil (campos em branco)
+         g_cfg_is_new == FALSE -> editar perfil seleccionado (g_sel_idx)
    ====================================================================== */
-static HWND  g_cfg_wnd = NULL;
+static HWND  g_cfg_wnd    = NULL;
+static BOOL  g_cfg_is_new = FALSE;  /* TRUE quando aberto por "Adicionar Conexao" */
+
+/* IDC extra para o campo Nome amigavel */
+#define IDC_CFG_NAME 507
 
 static LRESULT CALLBACK CfgWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -642,21 +757,66 @@ static LRESULT CALLBACK CfgWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
     case WM_COMMAND: {
         int id = LOWORD(wp);
         if (id == IDOK || id == IDM_SETUP) {
-            char tmp[256];
+            /* Ler campos */
+            char name[64]={0}, tmp[256];
+            GetDlgItemTextA(hw, IDC_CFG_NAME, name,     sizeof name);
             GetDlgItemTextA(hw, IDC_CFG_HOST, g_cfg.host, sizeof g_cfg.host);
             GetDlgItemTextA(hw, IDC_CFG_PORT, tmp, sizeof tmp);
             int p = atoi(tmp); if (p>0) g_cfg.port=(unsigned short)p;
             GetDlgItemTextA(hw, IDC_CFG_HUB,  g_cfg.hub,      sizeof g_cfg.hub);
             GetDlgItemTextA(hw, IDC_CFG_USER, g_cfg.username,  sizeof g_cfg.username);
             GetDlgItemTextA(hw, IDC_CFG_PASS, g_cfg.password,  sizeof g_cfg.password);
-            log_append("[CONFIG] Configuracao guardada.");
+
+            if (!g_cfg.host[0]) {
+                MessageBoxA(hw, "Preencha o campo Servidor.", "Configuracao VPN", MB_ICONWARNING);
+                return 0;
+            }
+
+            if (g_cfg_is_new) {
+                /* Criar novo perfil */
+                if (!name[0]) strncpy(name, g_cfg.host, sizeof name - 1);
+                /* Gerar account_name unico baseado no nome */
+                char acct[64] = {0};
+                int j = 0;
+                for (int i = 0; name[i] && j < 12; i++) {
+                    char c = name[i];
+                    if ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9'))
+                        acct[j++] = c;
+                }
+                if (!acct[0]) snprintf(acct, sizeof acct, "P%d", g_profiles.count);
+                snprintf(g_cfg.account_name, sizeof g_cfg.account_name, "RLS_%s", acct);
+
+                VpnProfile np = {0};
+                profiles_from_cfg(&np, &g_cfg, name);
+                int ni = profiles_add(&g_profiles, &np);
+                if (ni >= 0) {
+                    g_sel_idx = ni;
+                    profiles_save(&g_profiles);
+                    log_append("[CONFIG] Nova conexao adicionada e guardada.");
+                } else {
+                    MessageBoxA(hw, "Limite de perfis atingido (32).", "RLS VPN", MB_ICONWARNING);
+                }
+            } else {
+                /* Editar perfil existente */
+                int idx = g_sel_idx;
+                if (idx >= 0 && idx < g_profiles.count) {
+                    if (!name[0]) strncpy(name, g_profiles.items[idx].name, sizeof name - 1);
+                    profiles_from_cfg(&g_profiles.items[idx], &g_cfg, name);
+                    profiles_save(&g_profiles);
+                    log_append("[CONFIG] Configuracao do perfil guardada.");
+                }
+            }
+
             sb_set(1, "  Configuracao guardada.");
             FillListViews(NULL);
             EnableWindow(g_hwnd, TRUE);
             DestroyWindow(hw);
             g_cfg_wnd = NULL;
+
             if (id == IDM_SETUP) {
                 /* Criar NIC + conta VPN no SoftEther com os novos dados */
+                if (g_sel_idx >= 0 && g_sel_idx < g_profiles.count)
+                    profiles_to_cfg(&g_profiles.items[g_sel_idx], &g_cfg);
                 StartOp(1, NULL, NULL);
             }
         } else if (id == IDCANCEL) {
@@ -689,9 +849,13 @@ static LRESULT CALLBACK CfgWndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcA(hw, msg, wp, lp);
 }
 
-static void ShowConfigDlg(HWND parent)
+/* OpenConfigDlg: abre o dialogo de configuracao.
+   is_new == TRUE   -> formulario vazio para nova conexao
+   is_new == FALSE  -> editar perfil g_sel_idx                */
+static void OpenConfigDlg(HWND parent, BOOL is_new)
 {
     if (g_cfg_wnd) { SetForegroundWindow(g_cfg_wnd); return; }
+    g_cfg_is_new = is_new;
 
     HINSTANCE hI = (HINSTANCE)GetWindowLongPtrA(parent, GWLP_HINSTANCE);
 
@@ -707,54 +871,70 @@ static void ShowConfigDlg(HWND parent)
         reg = TRUE;
     }
 
-    int W=620, H=500;
+    /* Preparar valores iniciais */
+    char init_name[64]  = {0};
+    char init_host[256] = {0};
+    char init_port[8]   = "443";
+    char init_hub[64]   = {0};
+    char init_user[64]  = {0};
+    char init_pass[128] = {0};
+
+    if (!is_new && g_sel_idx >= 0 && g_sel_idx < g_profiles.count) {
+        VpnProfile *pr = &g_profiles.items[g_sel_idx];
+        strncpy(init_name, pr->name,     sizeof init_name - 1);
+        strncpy(init_host, pr->host,     sizeof init_host - 1);
+        snprintf(init_port, sizeof init_port, "%d", (int)pr->port);
+        strncpy(init_hub,  pr->hub,     sizeof init_hub - 1);
+        strncpy(init_user, pr->username, sizeof init_user - 1);
+        strncpy(init_pass, pr->password, sizeof init_pass - 1);
+    }
+
+    int W=640, H=540;
     RECT rc; GetWindowRect(parent,&rc);
     int X = rc.left+(rc.right-rc.left-W)/2;
     int Y = rc.top+(rc.bottom-rc.top-H)/2;
 
     g_cfg_wnd = CreateWindowExA(WS_EX_DLGMODALFRAME,
-        "RLS_CFG", "Configuracoes VPN",
+        "RLS_CFG",
+        is_new ? "Nova Conexao VPN" : "Editar Conexao VPN",
         WS_POPUP|WS_CAPTION|WS_SYSMENU,
         X,Y,W,H, parent, NULL, hI, NULL);
 
-    /* Use the same g_font_ui used by the main window (18pt Segoe UI) */
     HFONT f = g_font_ui;
-    char ps[8]; snprintf(ps,sizeof ps,"%d",g_cfg.port);
 
-    /* Row height = 32px, label width = 120px, edit height = 28px */
     #define LBL(t,x,y,w,h) do{ HWND _h=CreateWindowA("STATIC",t,WS_CHILD|WS_VISIBLE|SS_RIGHT,x,y,w,h,g_cfg_wnd,NULL,hI,NULL); SendMessageA(_h,WM_SETFONT,(WPARAM)f,0);}while(0)
     #define EDT(id,t,x,y,w,h,ex) do{ HWND _h=CreateWindowExA(WS_EX_CLIENTEDGE,"EDIT",t,WS_CHILD|WS_VISIBLE|WS_TABSTOP|(ex),x,y,w,h,g_cfg_wnd,(HMENU)(UINT_PTR)(id),hI,NULL); SendMessageA(_h,WM_SETFONT,(WPARAM)f,0);}while(0)
     #define BTN(t,id,x,y,w,h) do{ HWND _h=CreateWindowA("BUTTON",t,WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_PUSHBUTTON,x,y,w,h,g_cfg_wnd,(HMENU)(UINT_PTR)(id),hI,NULL); SendMessageA(_h,WM_SETFONT,(WPARAM)f,0);}while(0)
 
+    /* --- Identificacao ------------------------------------------------ */
+    LBL("Nome:",       10,  18, 110, 26); EDT(IDC_CFG_NAME, init_name,  125,  16, 470, 30, 0);
+
     /* --- Ligacao VPN ------------------------------------------------- */
-    LBL("Servidor:",    10,  24, 110, 26); EDT(IDC_CFG_HOST,g_cfg.host,    125, 22, 300, 30, 0);
-    LBL("Porta:",      432,  24,  50, 26); EDT(IDC_CFG_PORT,ps,            486, 22,  96, 30, ES_NUMBER);
-    LBL("Hub Virtual:", 10,  68, 110, 26); EDT(IDC_CFG_HUB, g_cfg.hub,     125, 66, 240, 30, 0);
-    LBL("Utilizador:",  10, 112, 110, 26); EDT(IDC_CFG_USER,g_cfg.username, 125,110, 240, 30, 0);
-    LBL("Password:",    10, 156, 110, 26); EDT(IDC_CFG_PASS,g_cfg.password, 125,154, 240, 30, ES_PASSWORD);
+    LBL("Servidor:",   10,  62, 110, 26); EDT(IDC_CFG_HOST, init_host,  125,  60, 300, 30, 0);
+    LBL("Porta:",     440,  62,  50, 26); EDT(IDC_CFG_PORT, init_port,  494,  60,  96, 30, ES_NUMBER);
+    LBL("Hub Virtual:",10, 106, 110, 26); EDT(IDC_CFG_HUB,  init_hub,   125, 104, 240, 30, 0);
+    LBL("Utilizador:", 10, 150, 110, 26); EDT(IDC_CFG_USER, init_user,  125, 148, 240, 30, 0);
+    LBL("Password:",   10, 194, 110, 26); EDT(IDC_CFG_PASS, init_pass,  125, 192, 240, 30, ES_PASSWORD);
 
     /* --- Separador --------------------------------------------------- */
-    HWND sep = CreateWindowA("STATIC","",WS_CHILD|WS_VISIBLE|SS_ETCHEDHORZ,
-        10,200,580,2, g_cfg_wnd,NULL,hI,NULL); (void)sep;
+    { HWND sep = CreateWindowA("STATIC","",WS_CHILD|WS_VISIBLE|SS_ETCHEDHORZ,
+        10,238,600,2, g_cfg_wnd,NULL,hI,NULL); (void)sep; }
 
-    /* --- IP Estatico: preenche com IP actual da placa VPN ------------ */
-    const char *cur_ip   = (g_vpn_ip[0] && strcmp(g_vpn_ip,"Placa sem IP")!=0)
-                           ? g_vpn_ip : "";
-    LBL("IP Estatico:", 10, 212, 110, 26); EDT(IDC_CFG_IPST, cur_ip,         125,210, 160, 30, 0);
-    LBL("Mascara:",    294, 212,  80, 26); EDT(IDC_CFG_MASK,"255.255.255.0", 378,210, 180, 30, 0);
-    BTN("Aplicar IP Estatico", IDM_APPLYIP, 10, 254, 200, 36);
+    /* --- IP Estatico ------------------------------------------------- */
+    const char *cur_ip = (g_vpn_ip[0] && strcmp(g_vpn_ip,"Placa sem IP")!=0)
+                         ? g_vpn_ip : "";
+    LBL("IP Estatico:",10, 250, 110, 26); EDT(IDC_CFG_IPST, cur_ip,      125,248, 160, 30, 0);
+    LBL("Mascara:",   294, 250,  80, 26); EDT(IDC_CFG_MASK,"255.255.255.0",378,248,180, 30, 0);
+    BTN("Aplicar IP Estatico", IDM_APPLYIP, 10, 292, 210, 36);
 
     /* --- Separador --------------------------------------------------- */
-    HWND sep2 = CreateWindowA("STATIC","",WS_CHILD|WS_VISIBLE|SS_ETCHEDHORZ,
-        10,304,580,2, g_cfg_wnd,NULL,hI,NULL); (void)sep2;
+    { HWND sep2= CreateWindowA("STATIC","",WS_CHILD|WS_VISIBLE|SS_ETCHEDHORZ,
+        10,342,600,2, g_cfg_wnd,NULL,hI,NULL); (void)sep2; }
 
     /* --- Acoes principais -------------------------------------------- */
-    /* Guardar config + fechar */
-    BTN("Guardar e Fechar", IDOK,      10, 318, 200, 40);
-    /* Guardar config e criar conta VPN no SoftEther imediatamente */
-    BTN("Criar Conta VPN",  IDM_SETUP, 220, 318, 190, 40);
-    /* Cancelar */
-    BTN("Cancelar",         IDCANCEL,  470, 318, 120, 40);
+    BTN("Guardar e Fechar", IDOK,      10, 356, 200, 40);
+    BTN("Criar Conta VPN",  IDM_SETUP, 220, 356, 200, 40);
+    BTN("Cancelar",         IDCANCEL,  490, 356, 120, 40);
 
     #undef LBL
     #undef EDT
@@ -763,6 +943,12 @@ static void ShowConfigDlg(HWND parent)
     EnableWindow(parent, FALSE);
     ShowWindow(g_cfg_wnd, SW_SHOW);
     SetFocus(g_cfg_wnd);
+}
+
+/* Manter compat com restante codigo que chama ShowConfigDlg */
+static void ShowConfigDlg(HWND parent)
+{
+    OpenConfigDlg(parent, FALSE);
 }
 
 /* ======================================================================
@@ -1538,6 +1724,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         AppendMenuA(mConn,MF_STRING,IDM_CONNECT,   "Ligar\tF5");
         AppendMenuA(mConn,MF_STRING,IDM_DISCONNECT,"Desligar\tF6");
         AppendMenuA(mConn,MF_SEPARATOR,0,NULL);
+        AppendMenuA(mConn,MF_STRING,IDM_ADD_CONN,  "Adicionar Conexao...");
+        AppendMenuA(mConn,MF_STRING,IDM_DEL_CONN,  "Remover Conexao Selecionada");
+        AppendMenuA(mConn,MF_SEPARATOR,0,NULL);
         AppendMenuA(mConn,MF_STRING,IDM_RESET,     "Reset (remove conta + placa)");
         AppendMenuA(mConn,MF_SEPARATOR,0,NULL);
         AppendMenuA(mConn,MF_STRING,IDM_EXIT,      "Sair\tAlt+F4");
@@ -1610,14 +1799,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         sb_set(2,"  IP: ---");
 
         /* --- Init VPN ----------------------------------------------- */
-        vpn_default_config(&g_cfg);
+        profiles_init(&g_profiles);
+        g_sel_idx = 0;
+        /* Carregar config do primeiro perfil como activo por defeito */
+        if (g_profiles.count > 0)
+            profiles_to_cfg(&g_profiles.items[0], &g_cfg);
+        else
+            vpn_default_config(&g_cfg);
         vpn_set_log_fn(vpn_log_cb,NULL);
 
         LayoutChildren(hwnd);
         /* Pre-populate ListViews immediately from defaults (user sees data at once) */
         FillListViews(NULL);
 
-        log_append("[RLS VPN v1.5.4] Interface iniciada. Aguardar estado VPN...");
+        log_append("[RLS VPN v2.0.0] Interface iniciada. Aguardar estado VPN...");
 
         /* Polling thread (TRUE = nao dorme na primeira iteracao) */
         HANDLE ht=CreateThread(NULL,0,PollThread,(LPVOID)(UINT_PTR)TRUE,0,NULL);
@@ -1638,20 +1833,59 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         int id=LOWORD(wp);
         switch(id){
         case IDM_TOGGLE:
-            /* Toggle: usa g_connected (atualizado otimisticamente no clique
-               e sincronizado pelo poll) — nao depende do g_state que pode
-               estar desatualizado no momento do clique.                    */
-            if (g_connected) {
-                g_connected = FALSE;   /* otimista: mostra LIGAR imediatamente */
-                StartOp(3,NULL,NULL);  /* AccountDisconnect */
+            /* Actua sobre o perfil seleccionado na lista */
+            if (g_connected && g_profiles.active_idx == g_sel_idx) {
+                /* Desligar o perfil activo */
+                g_connected = FALSE;
+                if (g_sel_idx >= 0 && g_sel_idx < g_profiles.count)
+                    profiles_to_cfg(&g_profiles.items[g_sel_idx], &g_cfg);
+                StartOp(3, NULL, NULL);
             } else {
-                g_connected = TRUE;    /* otimista: mostra DESLIGAR imediatamente */
-                StartOp(2,NULL,NULL);  /* AccountConnect */
+                /* Ligar o perfil seleccionado (com disconnect automatico se necessario) */
+                g_connected = TRUE;
+                StartConnect(g_sel_idx);
             }
             if (g_btn_toggle) { InvalidateRect(g_btn_toggle,NULL,TRUE); UpdateWindow(g_btn_toggle); }
             break;
-        case IDM_CONNECT:    StartOp(2,NULL,NULL); break;
-        case IDM_DISCONNECT: StartOp(3,NULL,NULL); break;
+        case IDM_CONNECT:
+            StartConnect(g_sel_idx);
+            break;
+        case IDM_DISCONNECT:
+            if (g_sel_idx >= 0 && g_sel_idx < g_profiles.count)
+                profiles_to_cfg(&g_profiles.items[g_sel_idx], &g_cfg);
+            StartOp(3,NULL,NULL);
+            break;
+        case IDM_ADD_CONN:
+            OpenConfigDlg(hwnd, TRUE);
+            break;
+        case IDM_DEL_CONN: {
+            int idx = g_sel_idx;
+            if (idx < 0 || idx >= g_profiles.count) break;
+            /* Impedir remocao do perfil activo enquanto ligado */
+            if (g_connected && g_profiles.active_idx == idx) {
+                MessageBoxA(hwnd,
+                    "Nao e possivel remover uma conexao activa.\nDesliga primeiro.",
+                    "Remover Conexao", MB_ICONWARNING);
+                break;
+            }
+            char msg[128];
+            snprintf(msg, sizeof msg,
+                "Remover a conexao \"%s\"?",
+                g_profiles.items[idx].name[0] ? g_profiles.items[idx].name : "(sem nome)");
+            if (MessageBoxA(hwnd, msg, "Remover Conexao", MB_YESNO|MB_ICONQUESTION) == IDYES) {
+                profiles_remove(&g_profiles, idx);
+                profiles_save(&g_profiles);
+                if (g_sel_idx >= g_profiles.count && g_profiles.count > 0)
+                    g_sel_idx = g_profiles.count - 1;
+                else if (g_profiles.count == 0)
+                    g_sel_idx = 0;
+                if (g_profiles.count > 0)
+                    profiles_to_cfg(&g_profiles.items[g_sel_idx], &g_cfg);
+                FillListViews(NULL);
+                log_append("[CONFIG] Conexao removida.");
+            }
+            break;
+        }
         case IDM_SETUP:      StartOp(1,NULL,NULL); break;
         case IDM_RESET:
             if (AskResetPassword(hwnd)) StartOp(4,NULL,NULL);
@@ -1662,18 +1896,23 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDM_APPLYIP:    ShowConfigDlg(hwnd);  break;
         case IDM_ABOUT:
             MessageBoxA(hwnd,
-                "RLS Automacao VPN Client v1.5.4\n\n"
+                "RLS Automacao VPN Client v2.0.0\n\n"
+                "Multi-Profile Manager:\n"
+                "  * Botao '+ Conexao' para adicionar novos servidores VPN.\n"
+                "  * Selecciona uma linha na lista e clica 'LIGAR'.\n"
+                "  * Se outro perfil estiver activo, e automaticamente\n"
+                "    desligado antes de ligar o novo.\n"
+                "  * Uma unica NIC virtual e partilhada por todos os perfis.\n"
+                "  * Configuracoes gravadas em JSON local (%APPDATA%\\RLS_Automacao).\n\n"
                 "Fluxo de utilizacao:\n"
-                "  1. Botao 'Configurar VPN'\n"
-                "     -> preencher Servidor / Hub / User / Password\n"
-                "     -> clicar 'Criar Conta VPN'\n"
-                "     (cria placa virtual + conta no SoftEther)\n\n"
-                "  2. Botao 'Ligar' para estabelecer a ligacao\n"
-                "  3. Botao 'Desligar' para terminar\n\n"
+                "  1. '+ Conexao' -> preencher Servidor / Hub / User / Password\n"
+                "     -> 'Criar Conta VPN' (regista no SoftEther)\n"
+                "  2. Seleccionar a linha -> clicar 'LIGAR'\n"
+                "  3. Clicar 'DESLIGAR' para terminar\n\n"
                 "Interface Win32 nativa. Zero WebView2.\n"
                 "Todo o output do SoftEther visivel no log.\n\n"
                 "(c) 2026 RLS Automacao",
-                "Sobre RLS VPN v1.5.4", MB_ICONINFORMATION);
+                "Sobre RLS VPN v2.0.0", MB_ICONINFORMATION);
             break;
         case IDM_EXIT:
             DestroyWindow(hwnd);
@@ -1692,34 +1931,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         const char *t=(const char*)lp;
         int ok=(int)(UINT_PTR)wp;
         g_busy=FALSE;
-        /* Corrigir g_connected se a operacao falhou */
-        if (g_last_op == 2 && !ok) {
-            g_connected = FALSE;  /* connect falhou -> reverte para desligado */
-            if (g_btn_toggle) { InvalidateRect(g_btn_toggle,NULL,TRUE); UpdateWindow(g_btn_toggle); }
+        /* Actualizar active_idx e g_connected conforme resultado */
+        if (g_last_op == 2 || g_last_op == 7) {
+            if (ok) {
+                g_connected = TRUE;
+                g_profiles.active_idx = g_sel_idx;
+            } else {
+                g_connected = FALSE;
+                g_profiles.active_idx = -1;
+            }
         } else if (g_last_op == 3) {
-            g_connected = FALSE;  /* disconnect concluido (sempre assume desligado) */
-            if (g_btn_toggle) { InvalidateRect(g_btn_toggle,NULL,TRUE); UpdateWindow(g_btn_toggle); }
-        } else if (g_last_op == 2 && ok) {
-            g_connected = TRUE;
-            if (g_btn_toggle) { InvalidateRect(g_btn_toggle,NULL,TRUE); UpdateWindow(g_btn_toggle); }
+            g_connected = FALSE;
+            g_profiles.active_idx = -1;
         }
+        if (g_btn_toggle) { InvalidateRect(g_btn_toggle,NULL,TRUE); UpdateWindow(g_btn_toggle); }
         if(t){
             log_append(t);
             sb_set(1,t);
-            /* Popup se SoftEther nao instalado */
             if (strstr(t, "nao esta instalado") || strstr(t, "nao encontrado")) {
                 MessageBoxA(g_hwnd, t,
                     "SoftEther VPN nao instalado", MB_ICONWARNING|MB_OK);
             }
             free((void*)t);
         }
-        /* Apos ligar/configurar: re-poll rapido para mostrar novo estado.
-           Apos DESLIGAR (op=3) NAO fazemos re-poll imediato — o SoftEther
-           ainda reporta "connected" por 1-2s e isso flipa g_connected de
-           volta para TRUE, tornando impossivel voltar a ligar.
-           O PollThread normal (3s) actualiza o estado quando o servico
-           confirmar o disconnect. */
-        if (g_last_op == 1 || g_last_op == 2) {
+        if (g_last_op == 1 || g_last_op == 2 || g_last_op == 7) {
             HANDLE ht = CreateThread(NULL, 0, PollThread, (LPVOID)(UINT_PTR)TRUE, 0, NULL);
             if (ht) CloseHandle(ht);
         }
@@ -1739,6 +1974,112 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_NOTIFY: {
         NMHDR *hdr = (NMHDR*)lp;
+
+        /* ── Seleccao de linha na lista de conexoes ───────────────── */
+        if ((hdr->code == NM_CLICK || hdr->code == LVN_ITEMCHANGED)
+             && hdr->hwndFrom == g_list_conns) {
+            int sel = ListView_GetNextItem(g_list_conns, -1, LVNI_SELECTED);
+            if (sel >= 0 && sel < g_profiles.count && sel != g_sel_idx) {
+                g_sel_idx = sel;
+                /* So actualiza g_cfg se nao estiver ligado a outro perfil */
+                if (g_profiles.active_idx < 0 || g_profiles.active_idx == sel)
+                    profiles_to_cfg(&g_profiles.items[sel], &g_cfg);
+                char info[128];
+                snprintf(info, sizeof info,
+                    "  Perfil: %s",
+                    g_profiles.items[sel].name[0]
+                        ? g_profiles.items[sel].name : "(sem nome)");
+                sb_set(1, info);
+            }
+        }
+
+        /* ── Duplo-clique na lista de conexoes: ligar ─────────────── */
+        if (hdr->code == NM_DBLCLK && hdr->hwndFrom == g_list_conns) {
+            NMITEMACTIVATE *nma = (NMITEMACTIVATE*)lp;
+            int row = nma->iItem;
+            if (row >= 0 && row < g_profiles.count) {
+                g_sel_idx = row;
+                profiles_to_cfg(&g_profiles.items[row], &g_cfg);
+                /* Se ja esta ligado neste perfil, desliga; senao liga */
+                if (g_connected && g_profiles.active_idx == row) {
+                    g_connected = FALSE;
+                    StartOp(3, NULL, NULL);
+                } else {
+                    g_connected = TRUE;
+                    StartConnect(row);
+                }
+                if (g_btn_toggle) { InvalidateRect(g_btn_toggle,NULL,TRUE); UpdateWindow(g_btn_toggle); }
+            }
+            return 0;
+        }
+
+        /* ── Botao direito na lista de conexoes: menu contextual ──── */
+        if (hdr->code == NM_RCLICK && hdr->hwndFrom == g_list_conns) {
+            /* Determinar linha clicada */
+            NMITEMACTIVATE *nma = (NMITEMACTIVATE*)lp;
+            int row = nma->iItem;
+            if (row < 0)
+                row = ListView_GetNextItem(g_list_conns, -1, LVNI_SELECTED);
+
+            if (row >= 0 && row < g_profiles.count) {
+                /* Actualizar seleccao para a linha clicada */
+                g_sel_idx = row;
+                ListView_SetItemState(g_list_conns, row,
+                    LVIS_SELECTED|LVIS_FOCUSED, LVIS_SELECTED|LVIS_FOCUSED);
+
+                BOOL is_active    = (g_profiles.active_idx == row);
+                BOOL conn_this    = (is_active && g_connected);
+                BOOL busy         = g_busy;
+
+                HMENU hm = CreatePopupMenu();
+
+                /* Ligar — disponivel se nao estiver ja ligado aqui e nao busy */
+                AppendMenuA(hm,
+                    (!conn_this && !busy) ? MF_STRING : (MF_STRING|MF_GRAYED),
+                    IDM_CONNECT, "Ligar");
+
+                /* Desligar — disponivel apenas se este perfil estiver activo */
+                AppendMenuA(hm,
+                    (conn_this && !busy) ? MF_STRING : (MF_STRING|MF_GRAYED),
+                    IDM_DISCONNECT, "Desligar");
+
+                AppendMenuA(hm, MF_SEPARATOR, 0, NULL);
+                AppendMenuA(hm, MF_STRING, IDM_SAVE_CFG, "Editar configuracao...");
+                AppendMenuA(hm, MF_SEPARATOR, 0, NULL);
+                AppendMenuA(hm,
+                    (!conn_this) ? MF_STRING : (MF_STRING|MF_GRAYED),
+                    IDM_DEL_CONN, "Remover conexao");
+
+                POINT pt; GetCursorPos(&pt);
+                /* TPM_RETURNCMD: devolve o ID escolhido sem disparar WM_COMMAND */
+                int cmd = TrackPopupMenu(hm,
+                    TPM_RIGHTBUTTON|TPM_RETURNCMD|TPM_NONOTIFY,
+                    pt.x, pt.y, 0, hwnd, NULL);
+                DestroyMenu(hm);
+
+                if (cmd == IDM_CONNECT) {
+                    if (!g_busy) {
+                        g_connected = TRUE;
+                        profiles_to_cfg(&g_profiles.items[row], &g_cfg);
+                        StartConnect(row);
+                        if (g_btn_toggle) { InvalidateRect(g_btn_toggle,NULL,TRUE); UpdateWindow(g_btn_toggle); }
+                    }
+                } else if (cmd == IDM_DISCONNECT) {
+                    if (!g_busy) {
+                        g_connected = FALSE;
+                        profiles_to_cfg(&g_profiles.items[row], &g_cfg);
+                        StartOp(3, NULL, NULL);
+                        if (g_btn_toggle) { InvalidateRect(g_btn_toggle,NULL,TRUE); UpdateWindow(g_btn_toggle); }
+                    }
+                } else if (cmd == IDM_SAVE_CFG) {
+                    ShowConfigDlg(hwnd);
+                } else if (cmd == IDM_DEL_CONN) {
+                    PostMessageA(hwnd, WM_COMMAND, MAKEWPARAM(IDM_DEL_CONN,0), 0);
+                }
+            }
+            return 0;
+        }
+
         if (hdr->code == NM_CUSTOMDRAW && hdr->hwndFrom == g_list_conns) {
             NMLVCUSTOMDRAW *cd = (NMLVCUSTOMDRAW*)lp;
             if (cd->nmcd.dwDrawStage == CDDS_PREPAINT)
@@ -1790,11 +2131,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_SRV_PING:
         /* Resultado do ping automatico ao servidor VPN */
         g_srv_reachable = (int)wp;
-        if (ListView_GetItemCount(g_list_conns) > 0) {
-            const char *s = (g_srv_reachable == 1) ? "Online" : "Offline";
-            ListView_SetItemText(g_list_conns, 0, 5, (char*)s);
-            ListView_RedrawItems(g_list_conns, 0, 0);
-            UpdateWindow(g_list_conns);
+        {
+            int active = g_profiles.active_idx;
+            if (active >= 0 && active < ListView_GetItemCount(g_list_conns)) {
+                const char *s = (g_srv_reachable == 1) ? "Online" : "Offline";
+                ListView_SetItemText(g_list_conns, active, 5, (char*)s);
+                ListView_RedrawItems(g_list_conns, active, active);
+                UpdateWindow(g_list_conns);
+            }
         }
         return 0;
 
@@ -1803,8 +2147,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         /* Desligar VPN ao fechar a aplicacao */
         if (g_connected) {
             char out[256]={0};
+            /* Usa a config do perfil activo */
+            if (g_profiles.active_idx >= 0 && g_profiles.active_idx < g_profiles.count)
+                profiles_to_cfg(&g_profiles.items[g_profiles.active_idx], &g_cfg);
             vpn_disconnect(&g_cfg, out, sizeof out);
         }
+        profiles_save(&g_profiles);
         DeleteObject(g_font_ui);
         DeleteObject(g_font_bold);
         DeleteObject(g_font_mono);
@@ -1840,7 +2188,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nCmdShow)
 
     g_hwnd=CreateWindowExA(0,
         "RLS_VPN_MAIN",
-        "RLS Automacao VPN Client v1.5.4",
+        "RLS Automacao VPN Client v2.0.0",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,CW_USEDEFAULT,1100,720,
         NULL,NULL,hInst,NULL);
