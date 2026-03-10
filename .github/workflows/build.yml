@@ -120,6 +120,26 @@ jobs:
           $sz = [math]::Round((Get-Item rls_vpn.msi).Length / 1MB, 1)
           Write-Host "MSI compilado com sucesso: $sz MB"
 
+      - name: Install NSIS (para gerar upgrade installer)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: choco install nsis --no-progress -y
+
+      - name: Build RLS_VPN_Upgrade.exe (NSIS)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $ver  = "${{ github.ref_name }}".TrimStart('v')
+          $verF = "$ver.0"
+          & "C:\Program Files (x86)\NSIS\makensis.exe" `
+            /DAPP_VERSION=$ver `
+            /DAPP_VERSION_FULL=$verF `
+            installer_upgrade.nsi
+          if (-not (Test-Path "RLS_VPN_Upgrade.exe")) {
+            Write-Error "RLS_VPN_Upgrade.exe nao foi gerado!"
+            exit 1
+          }
+          Write-Host "Upgrade installer: $(Get-Item RLS_VPN_Upgrade.exe | Select-Object -ExpandProperty Length) bytes"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -137,27 +157,29 @@ jobs:
           body: |
             ## RLS Automacao VPN ${{ github.ref_name }}
 
-            ### Novidades
-            - UI nativa Win32 GDI — sem WebView2, inicio instantaneo
-            - Botao LIGAR/DESLIGAR com cores verde/vermelho em tempo real
-            - Scan de rede VPN (ping/MAC/hostname de todos os dispositivos)
-            - Status SoftEther na tabela de adaptadores
-            - Protecao por senha no botao Reset (Rls@2024)
-            - Icone e branding RLS em toda a UI e instalador
-            - CRITICAL_SECTION em vpncmd — sem conflitos de threads
+            ---
 
-            ### Como instalar
-            1. Baixe **`rls_vpn.msi`** (recomendado) ou **`rls_vpn.exe`** standalone
-            2. Execute o MSI como **Administrador**
-            3. O SoftEther VPN Client e instalado automaticamente
-            4. Abra o atalho **RLS Automacao VPN** no Ambiente de Trabalho
+            ### Ja tenho instalado — quero actualizar
+            > Descarregue **`RLS_VPN_Upgrade.exe`**
+            - Fecha o programa automaticamente se estiver aberto
+            - Substitui **apenas** o `rls_vpn.exe` com a nova versao
+            - **Nao reinstala** o SoftEther
+            - **Nao apaga** os perfis VPN configurados
+            - Sem wizard — so clica e espera ~10 segundos
 
-            ### Requisitos
-            - Windows 10 / 11 (64-bit)
-            - Permissoes de Administrador
+            ---
+
+            ### Instalacao nova (primeiro uso na maquina)
+            > Descarregue **`rls_vpn.msi`**
+            - Instala o SoftEther VPN Client + RLS Automacao VPN
+            - Execute como **Administrador**
+            - Compativel com Windows 10/11 (64-bit)
+
+            ---
           files: |
             rls_vpn.exe
             rls_vpn.msi
+            RLS_VPN_Upgrade.exe
           draft: false
           prerelease: false
         env:
