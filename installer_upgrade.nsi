@@ -52,9 +52,28 @@ Section "Actualizar" SecUpgrade
   StrCmp $R0 "" not_installed installed
 
   not_installed:
-    MessageBox MB_ICONSTOP|MB_OK \
-      "RLS Automacao VPN nao esta instalado neste computador.$\r$\n$\r$\nPor favor instale primeiro o RLS_VPN_Setup.exe.$\r$\n$\r$\nDescarregue em: https://github.com/danilohenriquesilvalira/VPN_Interface_C/releases"
-    Abort
+    ; Chave NSIS nao encontrada - tentar chave do MSI (WiX)
+    ReadRegStr $R1 HKLM \
+      "Software\Microsoft\Windows\CurrentVersion\Uninstall\{A94F5158-83D4-432D-8949-809CA95F55D5}" \
+      "InstallLocation"
+    StrCmp $R1 "" try_wix2 found_wix
+    found_wix:
+      StrCpy $INSTDIR $R1
+      Goto installed
+    try_wix2:
+      ; InstallLocation vazio no WiX - procurar pelo caminho padrao conhecido
+      IfFileExists "$PROGRAMFILES64\RLS Automacao VPN\rls_vpn.exe" found_default 0
+      IfFileExists "$PROGRAMFILES\RLS Automacao VPN\rls_vpn.exe" found_default32 not_found_anywhere
+    found_default:
+      StrCpy $INSTDIR "$PROGRAMFILES64\RLS Automacao VPN"
+      Goto installed
+    found_default32:
+      StrCpy $INSTDIR "$PROGRAMFILES\RLS Automacao VPN"
+      Goto installed
+    not_found_anywhere:
+      MessageBox MB_ICONSTOP|MB_OK \
+        "RLS Automacao VPN nao esta instalado neste computador.$\r$\n$\r$\nPor favor instale primeiro o RLS_VPN_Setup.exe (instalacao nova).$\r$\n$\r$\nDescarregue em: https://github.com/danilohenriquesilvalira/VPN_Interface_C/releases"
+      Abort
 
   installed:
     StrCpy $INSTDIR $R0

@@ -39,6 +39,7 @@
 
     <Feature Id="ProductFeature" Title="RLS Automacao VPN" Level="1">
       <ComponentGroupRef Id="AppComponents" />
+      <ComponentRef Id="InstallDirRegComp" />
     </Feature>
 
     <!--
@@ -85,6 +86,15 @@
       <!-- Instalador SoftEther (incluido no MSI) -->
       <Component Id="SEInstallerComp" Guid="{8C5F2A1E-4D7B-6E3C-A9F2-7B4D1C8E5A3F}">
         <File Id="SEInstallerFile" Source="se_client.exe" KeyPath="yes" />
+      </Component>
+
+      <!-- Registo HKLM: grava caminho de instalacao para o upgrade installer -->
+      <Component Id="InstallDirRegComp" Guid="{1A2B3C4D-5E6F-7A8B-9C0D-1E2F3A4B5C6D}">
+        <RegistryValue Root="HKLM"
+                       Key="Software\RLS Automacao VPN"
+                       Name="Install_Dir"
+                       Type="string" Value="[INSTALLFOLDER]"
+                       KeyPath="yes" />
       </Component>
 
       <!-- Sem DLLs externas: EXE linkado 100% em C puro (sem C++/WebView2) -->
