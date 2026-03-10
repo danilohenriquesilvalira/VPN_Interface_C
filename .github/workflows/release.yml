@@ -34,16 +34,14 @@ jobs:
 
       # ---------------------------------------------------------------
       # 2. Ferramentas de compilacao: MinGW-w64 via MSYS2
+      #    (mesma config que build.yml que ja compila com sucesso)
       # ---------------------------------------------------------------
       - name: Setup MSYS2 + MinGW-w64
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: false
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-binutils
-            make
+          update: true
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-make
 
       # ---------------------------------------------------------------
       # 3. Compilar rls_vpn.exe
@@ -51,7 +49,7 @@ jobs:
       - name: Compile rls_vpn.exe
         shell: msys2 {0}
         run: |
-          cd "$GITHUB_WORKSPACE"
+          mingw32-make clean
           mingw32-make
           ls -lh rls_vpn.exe
 
