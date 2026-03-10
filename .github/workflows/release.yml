@@ -75,11 +75,11 @@ jobs:
       - name: Install NSIS
         run: choco install nsis --no-progress -y
 
-      - name: Build installer with NSIS
+      - name: Build full installer (RLS_VPN_Setup.exe)
         shell: pwsh
         run: |
           $ver  = "${{ steps.version.outputs.ver }}"
-          $verF = "$ver.0"    # NSIS VIProductVersion precisa de 4 componentes
+          $verF = "$ver.0"
           & "C:\Program Files (x86)\NSIS\makensis.exe" `
             /DAPP_VERSION=$ver `
             /DAPP_VERSION_FULL=$verF `
@@ -88,10 +88,28 @@ jobs:
             Write-Error "RLS_VPN_Setup.exe nao foi gerado!"
             exit 1
           }
-          Write-Host "Installer gerado: $(Get-Item RLS_VPN_Setup.exe | Select-Object -ExpandProperty Length) bytes"
+          Write-Host "Setup gerado: $(Get-Item RLS_VPN_Setup.exe | Select-Object -ExpandProperty Length) bytes"
 
       # ---------------------------------------------------------------
-      # 6. Criar GitHub Release e fazer upload do installer
+      # 6. Gerar installer de UPGRADE (so substitui o rls_vpn.exe)
+      # ---------------------------------------------------------------
+      - name: Build upgrade installer (RLS_VPN_Upgrade.exe)
+        shell: pwsh
+        run: |
+          $ver  = "${{ steps.version.outputs.ver }}"
+          $verF = "$ver.0"
+          & "C:\Program Files (x86)\NSIS\makensis.exe" `
+            /DAPP_VERSION=$ver `
+            /DAPP_VERSION_FULL=$verF `
+            installer_upgrade.nsi
+          if (-not (Test-Path "RLS_VPN_Upgrade.exe")) {
+            Write-Error "RLS_VPN_Upgrade.exe nao foi gerado!"
+            exit 1
+          }
+          Write-Host "Upgrade gerado: $(Get-Item RLS_VPN_Upgrade.exe | Select-Object -ExpandProperty Length) bytes"
+
+      # ---------------------------------------------------------------
+      # 7. Criar GitHub Release com os dois ficheiros
       # ---------------------------------------------------------------
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -103,17 +121,25 @@ jobs:
           body: |
             ## RLS Automacao VPN ${{ steps.version.outputs.tag }}
 
-            ### Instalacao / Upgrade
-            1. Descarregue **RLS_VPN_Setup.exe** abaixo
-            2. Execute como Administrador
-            3. O instalador detecta automaticamente se existe versao anterior:
-               - **Nova instalacao** — instala SoftEther + RLS VPN
-               - **Upgrade** — actualiza apenas o executavel, preserva todos os
-                 perfis guardados em `%APPDATA%\RLS_Automacao\` e nao
-                 reinstala o SoftEther
+            ---
 
-            ### Notas
+            ### Ja tenho instalado — quero actualizar
+            > Descarregue **`RLS_VPN_Upgrade.exe`**
+            - Detecta automaticamente onde esta instalado
+            - Fecha o programa se estiver aberto
+            - Substitui **apenas** o `rls_vpn.exe` com a nova versao
+            - **Nao reinstala** o SoftEther
+            - **Nao apaga** os seus perfis VPN configurados
+            - Sem wizard — so clica e espera
+
+            ---
+
+            ### Instalacao nova (primeiro uso)
+            > Descarregue **`RLS_VPN_Setup.exe`**
+            - Instala o SoftEther VPN Client + RLS Automacao VPN
             - Compativel com Windows 10/11 (64-bit)
-            - Requer SoftEther VPN Client (instalado automaticamente na primeira instalacao)
+
+            ---
           files: |
             RLS_VPN_Setup.exe
+            RLS_VPN_Upgrade.exe
