@@ -42,40 +42,112 @@ VIAddVersionKey   "LegalCopyright"   "Copyright 2026 RLS Automacao"
 
 !insertmacro MUI_LANGUAGE "PortugueseBR"
 
+;--- Funcao: procura em TODOS os registos de desinstalacao pelo DisplayName ---
+; Percorre HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\*
+; e HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*
+; Quando encontra DisplayName = "RLS Automacao VPN" le o InstallLocation.
+; Resultado em $9 (caminho) ou vazio se nao encontrou.
+Function FindInstallDir
+  Push $0   ; handle enum
+  Push $1   ; subkey name
+  Push $2   ; display name
+  Push $3   ; install location
+  Push $4   ; index
+  Push $5   ; root key loop
+
+  StrCpy $9 ""   ; resultado global
+
+  ; Testar os dois ramos do registo (64-bit e 32-bit/WOW)
+  StrCpy $5 0
+  loop_roots:
+    IntCmp $5 2 done_roots done_roots 0
+
+    IntCmp $5 0 0 try_wow
+      StrCpy $0 "Software\Microsoft\Windows\CurrentVersion\Uninstall"
+      Goto do_enum
+    try_wow:
+      StrCpy $0 "Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+
+    do_enum:
+      StrCpy $4 0
+      enum_loop:
+        EnumRegKey $1 HKLM "$0" $4
+        StrCmp $1 "" next_root 0
+        IntOp $4 $4 + 1
+
+        ReadRegStr $2 HKLM "$0\$1" "DisplayName"
+        ; Aceita "RLS Automacao VPN" com ou sem versao no nome
+        StrCpy $3 $2 18   ; primeiros 18 chars
+        StrCmp $3 "RLS Automacao VPN" found_display enum_loop
+
+      found_display:
+        ; Tentar InstallLocation primeiro
+        ReadRegStr $3 HKLM "$0\$1" "InstallLocation"
+        StrCmp $3 "" try_uninstall_path 0
+        ; Verificar que o exe existe nesse caminho
+        IfFileExists "$3\rls_vpn.exe" found_it try_uninstall_path
+
+      try_uninstall_path:
+        ; InstallLocation vazio ou invalido - extrair do UninstallString
+        ; Ex: "MsiExec.exe /X{GUID}" nao tem caminho util, ignorar
+        ; Tentar a chave customizada do NSIS
+        ReadRegStr $3 HKLM "Software\RLS Automacao VPN" "Install_Dir"
+        StrCmp $3 "" next_root 0
+        IfFileExists "$3\rls_vpn.exe" found_it next_root
+
+      found_it:
+        StrCpy $9 $3
+        Goto done_roots
+
+    next_root:
+      IntOp $5 $5 + 1
+      Goto loop_roots
+
+  done_roots:
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
 ;--- Seccao unica: substituir so o executavel ---
 Section "Actualizar" SecUpgrade
 
   ; ------------------------------------------------------------------
-  ; 1. Verificar que a versao base esta instalada
+  ; 1. Localizar onde esta instalado (qualquer disco, qualquer pasta)
   ; ------------------------------------------------------------------
-  ReadRegStr $R0 HKLM "Software\RLS Automacao VPN" "Install_Dir"
-  StrCmp $R0 "" not_installed installed
+  DetailPrint "A localizar instalacao do RLS Automacao VPN..."
 
-  not_installed:
-    ; Chave NSIS nao encontrada - tentar chave do MSI (WiX)
-    ReadRegStr $R1 HKLM \
-      "Software\Microsoft\Windows\CurrentVersion\Uninstall\{A94F5158-83D4-432D-8949-809CA95F55D5}" \
-      "InstallLocation"
-    StrCmp $R1 "" try_wix2 found_wix
-    found_wix:
-      StrCpy $INSTDIR $R1
-      Goto installed
-    try_wix2:
-      ; InstallLocation vazio no WiX - procurar pelo caminho padrao conhecido
-      IfFileExists "$PROGRAMFILES64\RLS Automacao VPN\rls_vpn.exe" found_default 0
-      IfFileExists "$PROGRAMFILES\RLS Automacao VPN\rls_vpn.exe" found_default32 not_found_anywhere
-    found_default:
-      StrCpy $INSTDIR "$PROGRAMFILES64\RLS Automacao VPN"
-      Goto installed
-    found_default32:
-      StrCpy $INSTDIR "$PROGRAMFILES\RLS Automacao VPN"
-      Goto installed
-    not_found_anywhere:
+  ; Tentativa 1: chave propria do nosso installer (mais rapido)
+  ReadRegStr $R0 HKLM "Software\RLS Automacao VPN" "Install_Dir"
+  StrCmp $R0 "" 0 verify_path
+    ; Tentativa 2: procura completa em todos os registos de uninstall
+    Call FindInstallDir
+    StrCpy $R0 $9
+
+  verify_path:
+  ; Verificar que o exe existe no caminho encontrado
+  StrCmp $R0 "" not_found 0
+  IfFileExists "$R0\rls_vpn.exe" found_ok not_found
+
+  not_found:
+    ; Ultima hipotese: pedir ao utilizador para indicar a pasta
+    MessageBox MB_YESNO|MB_ICONQUESTION \
+      "Nao foi possivel localizar automaticamente o RLS Automacao VPN.$\r$\n$\r$\nDeseja indicar manualmente a pasta de instalacao?" \
+      IDYES browse_folder IDNO abort_install
+    browse_folder:
+      nsDialogs::SelectFolderDialog "Seleccione a pasta onde esta instalado o RLS Automacao VPN" "$PROGRAMFILES64"
+      Pop $R0
+      StrCmp $R0 "error" abort_install 0
+      IfFileExists "$R0\rls_vpn.exe" found_ok abort_install
+    abort_install:
       MessageBox MB_ICONSTOP|MB_OK \
-        "RLS Automacao VPN nao esta instalado neste computador.$\r$\n$\r$\nPor favor instale primeiro o RLS_VPN_Setup.exe (instalacao nova).$\r$\n$\r$\nDescarregue em: https://github.com/danilohenriquesilvalira/VPN_Interface_C/releases"
+        "RLS Automacao VPN nao foi encontrado.$\r$\nPara instalar pela primeira vez use o RLS_VPN_Setup.exe."
       Abort
 
-  installed:
+  found_ok:
     StrCpy $INSTDIR $R0
     DetailPrint "Instalacao encontrada em: $INSTDIR"
 
